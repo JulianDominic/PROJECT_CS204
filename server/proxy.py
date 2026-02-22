@@ -35,20 +35,29 @@ class NetworkConditioner:
                 readable, _, _ = select.select(inputs, [], [])
                 for s in readable:
                     other = remote_socket if s is client_socket else client_socket
-                    data = s.recv(4096)
                     
+                    try:
+                        data = s.recv(4096)
+                    except ConnectionResetError:
+                        data = b''
+
                     if not data:
-                        inputs = []
-                        break
+                        # This side is done sending data (EOF). 
+                        # Stop reading from it.
+                        inputs.remove(s)
+                        try:
+                            # Gracefully forward the EOF (FIN packet) to the other side
+                            other.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass # The socket might already be fully closed
+                        continue
                     
-                    # Apply Network Conditions
+                    # --- Apply Network Conditions ---
                     
                     # 1. Packet Loss
                     if self.loss > 0 and random.random() < self.loss:
                         print(f"Packet loss occurred (simulated delay)")
-                        # Simulate TCP retransmission time (RTO) - e.g. 200ms to 1000ms
                         time.sleep(random.uniform(0.2, 1.0))
-                        # Don't drop data in app proxy, as TCP recovers. Just delay.
 
                     # 2. Latency & Jitter
                     delay = self.latency
@@ -58,12 +67,18 @@ class NetworkConditioner:
                     if delay > 0:
                         time.sleep(delay)
 
-                    # 3. Bandwidth Limitation (simple sleep based on size)
+                    # 3. Bandwidth Limitation
                     if self.bandwidth > 0:
                         transmit_time = len(data) / self.bandwidth
                         time.sleep(transmit_time)
 
-                    other.sendall(data)
+                    # --- Forward the Data ---
+                    try:
+                        other.sendall(data)
+                    except OSError:
+                        # If the other side unexpectedly closed, stop reading
+                        if s in inputs:
+                            inputs.remove(s)
         
         except Exception as e:
             print(f"Proxy error: {e}")
@@ -73,6 +88,7 @@ class NetworkConditioner:
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((self.listen_host, self.listen_port))
         server.listen(5)
         print(f"Proxy listening on {self.listen_host}:{self.listen_port} -> {self.target_host}:{self.target_port}")

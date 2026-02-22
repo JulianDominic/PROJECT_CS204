@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 # Configuration
 GOPHER_PORT = 7070
 HTTP_PORT = 8080
-GOPHER_PROXY_PORT = 7000
-HTTP_PROXY_PORT = 8000
+GOPHER_PROXY_PORT = 9070
+HTTP_PROXY_PORT = 9080
 
 SCENARIOS = [
     {"name": "Baseline", "latency": 0, "loss": 0},
@@ -98,6 +98,11 @@ def run_suite():
             # Kill Proxies
             gopher_proxy.terminate()
             http_proxy.terminate()
+            gopher_proxy.wait()
+            http_proxy.wait()
+            time.sleep(1)  # Allow ports to fully release
+            gopher_proxy.wait()  # Add this to wait for process exit
+            http_proxy.wait()    # Add this to wait for process exit
             
     finally:
         print("\nStopping Servers...")
