@@ -1,3 +1,21 @@
+"""
+Original Gopher Server (RFC 1436)
+
+This is the CLASSIC Gopher implementation:
+  - Each client request gets its own TCP connection
+  - The connection is CLOSED after the response is sent
+  - No keep-alive, no persistence
+
+Consequence (CS204 concepts):
+  Every request starts with a fresh TCP 3-way handshake, and the
+  congestion window resets to Slow Start. This means:
+    - High overhead for fetching many small files (N handshakes)
+    - Large files never benefit from a grown congestion window
+    - Each transfer is stuck in TCP Slow Start phase
+
+Contrast with gopher_modern_server.py which adds persistent connections.
+"""
+
 import socket
 import threading
 import os

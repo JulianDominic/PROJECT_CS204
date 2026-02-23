@@ -1,3 +1,28 @@
+"""
+TCP Network Condition Proxy
+
+Simulates real network impairments between client and server:
+
+  Latency model (realistic RTT simulation):
+    In a real network, propagation delay affects each *direction change*
+    (client→server, then server→client), NOT every individual data chunk.
+    TCP windowing lets many data chunks be in-flight simultaneously, so
+    once a response starts streaming, it flows at wire speed.
+
+    We apply latency ONCE per direction change — this correctly models:
+      - TCP handshake overhead (SYN → SYN-ACK = 1 RTT)
+      - Request → first response byte (1 RTT)
+      - But NOT a per-chunk delay that would destroy throughput
+
+  Packet loss model:
+    Random per-chunk loss simulated as retransmission delay (200-1000ms).
+    Since this is a TCP proxy, we can't truly drop packets — instead we
+    delay forwarding to mimic the effect of TCP retransmission on throughput.
+
+  Bandwidth model:
+    Per-chunk delay proportional to chunk size.
+"""
+
 import socket
 import threading
 import time
@@ -5,8 +30,9 @@ import random
 import select
 import argparse
 
+
 class NetworkConditioner:
-    def __init__(self, target_host, target_port, listen_host='0.0.0.0', listen_port=9999, 
+    def __init__(self, target_host, target_port, listen_host='0.0.0.0', listen_port=9999,
                  latency=0, jitter=0, loss=0, bandwidth=0):
         self.target_host = target_host
         self.target_port = target_port
@@ -27,45 +53,54 @@ class NetworkConditioner:
             client_socket.close()
             return
 
-        # Sockets to read from
         inputs = [client_socket, remote_socket]
-        
+
+        # Track data flow direction for RTT-based latency.
+        # Latency is applied once per direction change, not per chunk.
+        # "c2s" = client → server,  "s2c" = server → client
+        last_direction = None
+
         try:
             while inputs:
-                readable, _, _ = select.select(inputs, [], [])
+                readable, _, _ = select.select(inputs, [], [], 60.0)
+                if not readable:
+                    break  # idle timeout
+
                 for s in readable:
                     other = remote_socket if s is client_socket else client_socket
-                    
+                    direction = "c2s" if s is client_socket else "s2c"
+
                     try:
                         data = s.recv(4096)
                     except ConnectionResetError:
                         data = b''
 
                     if not data:
-                        # This side is done sending data (EOF). 
-                        # Stop reading from it.
                         inputs.remove(s)
                         try:
-                            # Gracefully forward the EOF (FIN packet) to the other side
                             other.shutdown(socket.SHUT_WR)
                         except OSError:
-                            pass # The socket might already be fully closed
+                            pass
                         continue
-                    
+
                     # --- Apply Network Conditions ---
-                    
-                    # 1. Packet Loss
+
+                    # 1. Packet Loss (simulated as retransmission delay)
                     if self.loss > 0 and random.random() < self.loss:
-                        print(f"Packet loss occurred (simulated delay)")
                         time.sleep(random.uniform(0.2, 1.0))
 
-                    # 2. Latency & Jitter
-                    delay = self.latency
-                    if self.jitter:
-                        delay += random.uniform(-self.jitter, self.jitter)
-                    
-                    if delay > 0:
-                        time.sleep(delay)
+                    # 2. Latency: apply once per direction change (models RTT)
+                    #    This means: client sends request → latency → server gets it
+                    #                server sends response → latency → client gets it
+                    #    Subsequent data chunks in the same direction flow freely
+                    #    (just like real TCP with windowing)
+                    if self.latency > 0 and direction != last_direction:
+                        delay = self.latency
+                        if self.jitter:
+                            delay += random.uniform(-self.jitter, self.jitter)
+                        if delay > 0:
+                            time.sleep(delay)
+                        last_direction = direction
 
                     # 3. Bandwidth Limitation
                     if self.bandwidth > 0:
@@ -76,10 +111,9 @@ class NetworkConditioner:
                     try:
                         other.sendall(data)
                     except OSError:
-                        # If the other side unexpectedly closed, stop reading
                         if s in inputs:
                             inputs.remove(s)
-        
+
         except Exception as e:
             print(f"Proxy error: {e}")
         finally:
