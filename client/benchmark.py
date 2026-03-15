@@ -312,16 +312,34 @@ def measure_http2_multi(host, port, filenames):
 async def _measure_http2_multi_mux(host, port, filenames):
     """HTTP/2 TRUE multiplexing: fire all requests concurrently."""
     start = time.time()
+    
+    first_ttfb = None
+    total_bytes = 0
 
     async with httpx.AsyncClient(http2=True, verify=False, timeout=30.0) as client:
-        tasks = [client.get(f"https://{host}:{port}/{f}") for f in filenames]
+        async def fetch(f):
+            ttfb_local = None
+            async with client.stream("GET", f"https://{host}:{port}/{f}") as resp:
+                content = b""
+                async for chunk in resp.aiter_bytes():
+                    if ttfb_local is None:
+                        ttfb_local = (time.time() - start) * 1000
+                    content += chunk
+            return content, ttfb_local
+
+        tasks = [fetch(f) for f in filenames]
         responses = await asyncio.gather(*tasks)
 
-    total_bytes = sum(len(r.content) for r in responses)
+    for content, ttfb in responses:
+        if ttfb is not None:
+            if first_ttfb is None or ttfb < first_ttfb:
+                first_ttfb = ttfb
+        total_bytes += len(content)
+
     total_time = (time.time() - start) * 1000
 
     return {
-        "ttfb": 0,  # Not meaningful for truly concurrent requests
+        "ttfb": first_ttfb or 0,
         "total_time": total_time,
         "bytes": total_bytes,
         "num_files": len(filenames),
@@ -438,9 +456,8 @@ if HAS_HTTP3:
             connect_host, port, configuration=config, create_protocol=_H3Client
         ) as client:
             authority = f"{connect_host}:{port}"
-            results = []
-            for filename in filenames:
-                results.append(await client.get(authority, f"/{filename}"))
+            tasks = [client.get(authority, f"/{f}") for f in filenames]
+            results = await asyncio.gather(*tasks)
 
         total_bytes = sum(len(data) for data, _ in results)
         first_ttfb = results[0][1] if results else 0
