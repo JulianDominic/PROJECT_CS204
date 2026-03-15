@@ -42,6 +42,12 @@ import httpx
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
+
+def _http3_connect_host(host):
+    if host in {"localhost", "::1"}:
+        return "127.0.0.1"
+    return host
+
 # Optional: HTTP/3 support (requires aioquic)
 try:
     from aioquic.asyncio import connect as quic_connect
@@ -133,31 +139,39 @@ class _GopherModernConn:
         self.sock.connect((self.host, self.port))
         self.buffer = b""
 
-    def fetch(self, selector):
-        """Send selector, read length-prefixed response, return raw bytes."""
+    def fetch(self, selector, start_time=None):
+        """Send selector, read length-prefixed response, return raw bytes and TTFB."""
         self.sock.sendall(f"{selector}\r\n".encode("utf-8"))
+        ttfb = None
 
         # Read length header: "<digits>\r\n"
         while b"\r\n" not in self.buffer:
             chunk = self.sock.recv(4096)
             if not chunk:
                 raise ConnectionError("Server closed connection")
+            if ttfb is None and start_time is not None:
+                ttfb = (time.time() - start_time) * 1000
             self.buffer += chunk
 
         header_end = self.buffer.index(b"\r\n")
         length = int(self.buffer[:header_end])
         self.buffer = self.buffer[header_end + 2 :]
 
+        if ttfb is None and start_time is not None and self.buffer:
+            ttfb = (time.time() - start_time) * 1000
+
         # Read exactly `length` bytes of body
         while len(self.buffer) < length:
             chunk = self.sock.recv(4096)
             if not chunk:
                 raise ConnectionError("Server closed connection")
+            if ttfb is None and start_time is not None:
+                ttfb = (time.time() - start_time) * 1000
             self.buffer += chunk
 
         data = self.buffer[:length]
         self.buffer = self.buffer[length:]
-        return data
+        return data, (ttfb or 0)
 
     def close(self):
         try:
@@ -173,10 +187,9 @@ def measure_gopher_modern(host, port, filename):
 
     conn = _GopherModernConn(host, port)
     conn.connect()
-    data = conn.fetch(filename)
+    data, ttfb = conn.fetch(filename, start_time=start)
 
-    ttfb = (time.time() - start) * 1000  # Includes connect + first response
-    total_time = ttfb  # Single fetch — TTFB ≈ total time
+    total_time = (time.time() - start) * 1000
     conn.close()
 
     return {"ttfb": ttfb, "total_time": total_time, "bytes": len(data)}
@@ -193,9 +206,9 @@ def measure_gopher_modern_multi(host, port, filenames):
 
     for f in filenames:
         req_start = time.time()
-        data = conn.fetch(f)
+        data, ttfb = conn.fetch(f, start_time=req_start)
         if first_ttfb is None:
-            first_ttfb = (time.time() - req_start) * 1000
+            first_ttfb = ttfb
         total_bytes += len(data)
 
     total_time = (time.time() - start) * 1000
@@ -207,7 +220,6 @@ def measure_gopher_modern_multi(host, port, filenames):
         "bytes": total_bytes,
         "num_files": len(filenames),
     }
-
 
 # ═══════════════════════════════════════════════════════════════════════
 #  HTTP/1.1 (via requests library)
@@ -224,10 +236,14 @@ def measure_http11(host, port, filename, session=None):
         session = requests.Session()
 
     start = time.time()
+    ttfb = None
+    chunks = []
     with session.get(url, stream=True, timeout=30.0) as r:
-        ttfb = (time.time() - start) * 1000  # Headers received
-        chunks = []
         for chunk in r.iter_content(chunk_size=4096):
+            if not chunk:
+                continue
+            if ttfb is None:
+                ttfb = (time.time() - start) * 1000
             chunks.append(chunk)
     total_time = (time.time() - start) * 1000
 
@@ -235,7 +251,7 @@ def measure_http11(host, port, filename, session=None):
         session.close()
 
     data = b"".join(chunks)
-    return {"ttfb": ttfb, "total_time": total_time, "bytes": len(data)}
+    return {"ttfb": ttfb or 0, "total_time": total_time, "bytes": len(data)}
 
 
 def measure_http11_multi(host, port, filenames):
@@ -274,50 +290,56 @@ def measure_http2(host, port, filename):
 
     with httpx.Client(http2=True, verify=False, timeout=30.0) as client:
         with client.stream("GET", url) as response:
-            ttfb = (time.time() - start) * 1000
-            data = response.read()
+            ttfb = None
+            chunks = []
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                if ttfb is None:
+                    ttfb = (time.time() - start) * 1000
+                chunks.append(chunk)
 
     total_time = (time.time() - start) * 1000
-    return {"ttfb": ttfb, "total_time": total_time, "bytes": len(data)}
+    data = b"".join(chunks)
+    return {"ttfb": ttfb or 0, "total_time": total_time, "bytes": len(data)}
 
 
 def measure_http2_multi(host, port, filenames):
-    """HTTP/2 waterfall: sequential requests over one multiplexed connection."""
-    start = time.time()
-    total_bytes = 0
-    first_ttfb = None
-
-    with httpx.Client(http2=True, verify=False, timeout=30.0) as client:
-        for f in filenames:
-            req_start = time.time()
-            url = f"https://{host}:{port}/{f}"
-            r = client.get(url)
-            if first_ttfb is None:
-                first_ttfb = (time.time() - req_start) * 1000
-            total_bytes += len(r.content)
-
-    total_time = (time.time() - start) * 1000
-    return {
-        "ttfb": first_ttfb or 0,
-        "total_time": total_time,
-        "bytes": total_bytes,
-        "num_files": len(filenames),
-    }
+    """HTTP/2 multi-file: true multiplexing over one connection."""
+    return measure_http2_multi_multiplexed(host, port, filenames)
 
 
 async def _measure_http2_multi_mux(host, port, filenames):
     """HTTP/2 TRUE multiplexing: fire all requests concurrently."""
     start = time.time()
+    
+    first_ttfb = None
+    total_bytes = 0
 
     async with httpx.AsyncClient(http2=True, verify=False, timeout=30.0) as client:
-        tasks = [client.get(f"https://{host}:{port}/{f}") for f in filenames]
+        async def fetch(f):
+            ttfb_local = None
+            async with client.stream("GET", f"https://{host}:{port}/{f}") as resp:
+                content = b""
+                async for chunk in resp.aiter_bytes():
+                    if ttfb_local is None:
+                        ttfb_local = (time.time() - start) * 1000
+                    content += chunk
+            return content, ttfb_local
+
+        tasks = [fetch(f) for f in filenames]
         responses = await asyncio.gather(*tasks)
 
-    total_bytes = sum(len(r.content) for r in responses)
+    for content, ttfb in responses:
+        if ttfb is not None:
+            if first_ttfb is None or ttfb < first_ttfb:
+                first_ttfb = ttfb
+        total_bytes += len(content)
+
     total_time = (time.time() - start) * 1000
 
     return {
-        "ttfb": 0,  # Not meaningful for truly concurrent requests
+        "ttfb": first_ttfb or 0,
         "total_time": total_time,
         "bytes": total_bytes,
         "num_files": len(filenames),
@@ -414,25 +436,26 @@ if HAS_HTTP3:
         config.verify_mode = ssl.CERT_NONE
 
         start = time.time()
+        connect_host = _http3_connect_host(host)
         async with quic_connect(
-            host, port, configuration=config, create_protocol=_H3Client
+            connect_host, port, configuration=config, create_protocol=_H3Client
         ) as client:
-            data, ttfb = await client.get(f"{host}:{port}", f"/{filename}")
+            data, ttfb = await client.get(f"{connect_host}:{port}", f"/{filename}")
 
         total_time = (time.time() - start) * 1000
         return {"ttfb": ttfb, "total_time": total_time, "bytes": len(data)}
 
     async def _measure_http3_multi(host, port, filenames):
-        """HTTP/3 multi-file: one QUIC connection, multiplexed streams."""
+        """HTTP/3 multi-file: reuse one QUIC connection across sequential requests."""
         config = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=True)
         config.verify_mode = ssl.CERT_NONE
 
         start = time.time()
+        connect_host = _http3_connect_host(host)
         async with quic_connect(
-            host, port, configuration=config, create_protocol=_H3Client
+            connect_host, port, configuration=config, create_protocol=_H3Client
         ) as client:
-            authority = f"{host}:{port}"
-            # Fire all requests concurrently — QUIC multiplexes them
+            authority = f"{connect_host}:{port}"
             tasks = [client.get(authority, f"/{f}") for f in filenames]
             results = await asyncio.gather(*tasks)
 
