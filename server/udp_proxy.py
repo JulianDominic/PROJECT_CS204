@@ -1,23 +1,14 @@
 """
-UDP Network Condition Proxy — for QUIC / HTTP/3 testing.
+UDP Network Condition Proxy - for QUIC / HTTP/3 testing.
 
 Works alongside proxy.py (TCP) to simulate network impairments on UDP traffic.
 QUIC uses UDP, so the existing TCP proxy cannot be used for HTTP/3 benchmarks.
-
-Simulates:
-  - Latency (non-blocking delayed forwarding — allows concurrent in-flight packets)
-  - Packet loss (random drop)
-
-Architecture:
-  Client ──UDP──▶ [UDP Proxy :9433] ──UDP──▶ Server :4433
-         ◀──UDP──                   ◀──UDP──
 """
 
+import argparse
+import random
 import socket
 import threading
-import time
-import random
-import argparse
 
 
 class UDPProxy:
@@ -30,21 +21,25 @@ class UDPProxy:
         latency=0,
         loss=0,
     ):
-        self.target = (target_host, target_port)
+        self.target = self._resolve_target(target_host, target_port)
         self.listen_host = listen_host
         self.listen_port = listen_port
-        self.latency = latency / 1000.0  # ms → seconds
-        self.loss = loss / 100.0  # percent → fraction
+        self.latency = latency / 1000.0
+        self.loss = loss / 100.0
         self.running = True
-        self.client_map = {}  # client_addr → relay_socket
+        self.client_map = {}
         self.lock = threading.Lock()
 
+    def _resolve_target(self, host, port):
+        infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        if not infos:
+            raise OSError(f"Could not resolve UDP target {host}:{port}")
+        return infos[0][4]
+
     def _should_drop(self):
-        """Return True if this packet should be dropped (simulated loss)."""
         return self.loss > 0 and random.random() < self.loss
 
     def _delayed_send(self, sock, data, addr):
-        """Schedule a non-blocking delayed send (simulates propagation delay)."""
         if self.latency > 0:
             jitter = self.latency * 0.1
             delay = max(0, self.latency + random.uniform(-jitter, jitter))
@@ -55,14 +50,12 @@ class UDPProxy:
             self._do_send(sock, data, addr)
 
     def _do_send(self, sock, data, addr):
-        """Actually send the datagram."""
         try:
             sock.sendto(data, addr)
         except OSError:
             pass
 
     def _relay_responses(self, relay_sock, listen_sock, client_addr):
-        """Forward response datagrams from the real server back to the client."""
         relay_sock.settimeout(60.0)
         try:
             while self.running:
@@ -74,7 +67,6 @@ class UDPProxy:
                 if self._should_drop():
                     continue
 
-                # Non-blocking delayed forward back to client
                 self._delayed_send(listen_sock, data, client_addr)
         except Exception:
             pass
@@ -88,14 +80,8 @@ class UDPProxy:
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listen_sock.bind((self.listen_host, self.listen_port))
 
-        print(
-            f"UDP Proxy on :{self.listen_port} → "
-            f"{self.target[0]}:{self.target[1]}"
-        )
-        print(
-            f"Conditions: latency={self.latency*1000:.0f}ms  "
-            f"loss={self.loss*100:.0f}%"
-        )
+        print(f"UDP Proxy on :{self.listen_port} -> {self.target[0]}:{self.target[1]}")
+        print(f"Conditions: latency={self.latency*1000:.0f}ms  loss={self.loss*100:.0f}%")
 
         try:
             while self.running:
@@ -106,7 +92,6 @@ class UDPProxy:
 
                 with self.lock:
                     if client_addr not in self.client_map:
-                        # Create a dedicated socket for server ↔ this client
                         relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         self.client_map[client_addr] = relay_sock
                         threading.Thread(
@@ -116,9 +101,7 @@ class UDPProxy:
                         ).start()
                     relay_sock = self.client_map[client_addr]
 
-                # Non-blocking delayed forward to server
                 self._delayed_send(relay_sock, data, self.target)
-
         except KeyboardInterrupt:
             print("\nStopping UDP proxy...")
         finally:

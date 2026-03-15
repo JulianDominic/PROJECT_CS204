@@ -36,10 +36,11 @@ CONTENT_DIR = "../../data/content"
 class ModernGopherHandler:
     """Handle a single persistent client connection."""
 
-    def __init__(self, client_socket, client_address, root_dir):
+    def __init__(self, client_socket, client_address, root_dir, server_port):
         self.socket = client_socket
         self.address = client_address
         self.root_dir = os.path.abspath(root_dir)
+        self.server_port = server_port
         self.buffer = b""
 
     def handle(self):
@@ -107,9 +108,15 @@ class ModernGopherHandler:
 
     def _send_file(self, filepath):
         try:
+            filesize = os.path.getsize(filepath)
+            header = f"{filesize}\r\n".encode("utf-8")
+            self.socket.sendall(header)
             with open(filepath, "rb") as f:
-                data = f.read()
-            self._send_response(data)
+                while True:
+                    chunk = f.read(4096)
+                    if not chunk:
+                        break
+                    self.socket.sendall(chunk)
         except Exception as e:
             self._send_error(f"Error reading file: {e}")
 
@@ -119,7 +126,7 @@ class ModernGopherHandler:
             for item in sorted(os.listdir(directory)):
                 path = os.path.join(directory, item)
                 item_type = "1" if os.path.isdir(path) else "0"
-                response += f"{item_type}{item}\t{item}\tlocalhost\t{DEFAULT_PORT}\r\n"
+                response += f"{item_type}{item}\t{item}\tlocalhost\t{self.server_port}\r\n"
         except Exception as e:
             self._send_error(f"Error listing directory: {e}")
             return
@@ -142,7 +149,7 @@ def run_server(host=DEFAULT_HOST, port=DEFAULT_PORT, content_dir=CONTENT_DIR):
     try:
         while True:
             client_sock, client_addr = server_socket.accept()
-            handler = ModernGopherHandler(client_sock, client_addr, content_dir)
+            handler = ModernGopherHandler(client_sock, client_addr, content_dir, port)
             threading.Thread(target=handler.handle, daemon=True).start()
     except KeyboardInterrupt:
         print("\nServer stopping...")
