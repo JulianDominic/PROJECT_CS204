@@ -72,6 +72,8 @@ def ensure_certs():
     if not os.path.isfile(cert) or not os.path.isfile(key):
         print("  Generating TLS certificates...")
         subprocess.run([sys.executable, os.path.join(CERTS_DIR, "generate_certs.py")])
+    else:
+        print("Certs found!")
     return os.path.abspath(cert), os.path.abspath(key)
 
 
@@ -86,7 +88,7 @@ def ensure_content():
 # ═══════════════════════════════════════════════════════════════════════
 
 def start_servers(content_dir, cert, key):
-    """Start all five protocol servers in the background."""
+    print("Starting all five protocol servers in the background.")
     servers = {}
 
     # Original Gopher (closes connection after each request)
@@ -150,6 +152,12 @@ def run_suite():
     print("\n  Starting servers...")
     servers = start_servers(content_dir, cert, key)
     time.sleep(3)  # Allow servers to bind
+
+    while True:
+        if input("Enter q to quit: ") == "q":
+            print("\n  Stopping servers...")
+            stop(servers)
+            break
 
 
 
