@@ -21,9 +21,9 @@ from client.benchmark import BenchmarkRunner
 PORTS = {
     "gopher-original": {"server": 7070, "proxy": 9070},
     "gopher-modern":   {"server": 7071, "proxy": 9071},
-    "http/1.1":        {"server": 7072, "proxy": 9080},
-    "http/2":          {"server": 7073, "proxy": 9443},
-    "http/3":          {"server": 7074, "proxy": 9433},
+    "http/1.1":        {"server": 7072, "proxy": 9080}, # http work, https DONT WORK
+    "http/2":          {"server": 7073, "proxy": 9443}, # https work, http dont work
+    "http/3":          {"server": 7074, "proxy": 9433}, # 
 }
 
 ALL_PROTOCOLS = ["gopher-original", "gopher-modern", "http/1.1", "http/2", "http/3"]
