@@ -1,14 +1,42 @@
 """
 UDP Network Condition Proxy - for QUIC / HTTP/3 testing.
 
-Works alongside proxy.py (TCP) to simulate network impairments on UDP traffic.
-QUIC uses UDP, so the existing TCP proxy cannot be used for HTTP/3 benchmarks.
+Uses asyncio datagram transports instead of per-packet timer threads. This keeps
+delayed QUIC traffic ordered and stable enough for latency/loss benchmarking.
 """
 
 import argparse
+import asyncio
 import random
 import socket
-import threading
+
+
+class UpstreamProtocol(asyncio.DatagramProtocol):
+    def __init__(self, proxy, client_addr):
+        self.proxy = proxy
+        self.client_addr = client_addr
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+        self.proxy.register_upstream(self.client_addr, transport)
+
+    def datagram_received(self, data, addr):
+        self.proxy.handle_server_datagram(self.client_addr, data)
+
+    def connection_lost(self, exc):
+        self.proxy.unregister_upstream(self.client_addr, self.transport)
+
+
+class ProxyProtocol(asyncio.DatagramProtocol):
+    def __init__(self, proxy):
+        self.proxy = proxy
+
+    def connection_made(self, transport):
+        self.proxy.listen_transport = transport
+
+    def datagram_received(self, data, addr):
+        self.proxy.handle_client_datagram(addr, data)
 
 
 class UDPProxy:
@@ -20,15 +48,20 @@ class UDPProxy:
         listen_port=9433,
         latency=0,
         loss=0,
+        warmup_packets=8,
     ):
         self.target = self._resolve_target(target_host, target_port)
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.latency = latency / 1000.0
         self.loss = loss / 100.0
-        self.running = True
-        self.client_map = {}
-        self.lock = threading.Lock()
+        self.warmup_packets = max(0, warmup_packets)
+
+        self.loop = None
+        self.listen_transport = None
+        self.upstreams = {}
+        self.packet_counts = {}
+        self.send_order = 0
 
     def _resolve_target(self, host, port):
         infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
@@ -36,77 +69,90 @@ class UDPProxy:
             raise OSError(f"Could not resolve UDP target {host}:{port}")
         return infos[0][4]
 
-    def _should_drop(self):
+    def _count_packet(self, client_addr):
+        count = self.packet_counts.get(client_addr, 0) + 1
+        self.packet_counts[client_addr] = count
+        return count
+
+    def _should_drop(self, client_addr):
+        count = self._count_packet(client_addr)
+        if count <= self.warmup_packets:
+            return False
         return self.loss > 0 and random.random() < self.loss
 
-    def _delayed_send(self, sock, data, addr):
-        if self.latency > 0:
-            jitter = self.latency * 0.1
-            delay = max(0, self.latency + random.uniform(-jitter, jitter))
-            timer = threading.Timer(delay, self._do_send, args=(sock, data, addr))
-            timer.daemon = True
-            timer.start()
+    def _schedule_send(self, transport, data, addr):
+        delay = self.latency if self.latency > 0 else 0
+        self.send_order += 1
+        order = self.send_order
+        self.loop.call_later(delay, self._send_now, transport, data, addr, order)
+
+    @staticmethod
+    def _send_now(transport, data, addr, order):
+        if transport.is_closing():
+            return
+        if addr is None:
+            transport.sendto(data)
         else:
-            self._do_send(sock, data, addr)
+            transport.sendto(data, addr)
 
-    def _do_send(self, sock, data, addr):
-        try:
-            sock.sendto(data, addr)
-        except OSError:
-            pass
+    def register_upstream(self, client_addr, transport):
+        self.upstreams[client_addr] = transport
 
-    def _relay_responses(self, relay_sock, listen_sock, client_addr):
-        relay_sock.settimeout(60.0)
-        try:
-            while self.running:
-                try:
-                    data, _ = relay_sock.recvfrom(65535)
-                except socket.timeout:
-                    break
+    def unregister_upstream(self, client_addr, transport):
+        current = self.upstreams.get(client_addr)
+        if current is transport:
+            self.upstreams.pop(client_addr, None)
+            self.packet_counts.pop(client_addr, None)
 
-                if self._should_drop():
-                    continue
+    def handle_client_datagram(self, client_addr, data):
+        if self._should_drop(client_addr):
+            return
 
-                self._delayed_send(listen_sock, data, client_addr)
-        except Exception:
-            pass
-        finally:
-            relay_sock.close()
-            with self.lock:
-                self.client_map.pop(client_addr, None)
+        upstream = self.upstreams.get(client_addr)
+        if upstream is None:
+            self.loop.create_task(self._create_upstream_and_forward(client_addr, data))
+            return
 
-    def start(self):
-        listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listen_sock.bind((self.listen_host, self.listen_port))
+        self._schedule_send(upstream, data, None)
+
+    def handle_server_datagram(self, client_addr, data):
+        if self._should_drop(client_addr):
+            return
+        if self.listen_transport is None or self.listen_transport.is_closing():
+            return
+        self._schedule_send(self.listen_transport, data, client_addr)
+
+    async def _create_upstream_and_forward(self, client_addr, initial_data):
+        if client_addr in self.upstreams:
+            upstream = self.upstreams[client_addr]
+            self._schedule_send(upstream, initial_data, None)
+            return
+
+        transport, _ = await self.loop.create_datagram_endpoint(
+            lambda: UpstreamProtocol(self, client_addr),
+            remote_addr=self.target,
+            family=socket.AF_INET,
+        )
+        self._schedule_send(transport, initial_data, None)
+
+    async def run(self):
+        self.loop = asyncio.get_running_loop()
+        transport, _ = await self.loop.create_datagram_endpoint(
+            lambda: ProxyProtocol(self),
+            local_addr=(self.listen_host, self.listen_port),
+            family=socket.AF_INET,
+        )
+        self.listen_transport = transport
 
         print(f"UDP Proxy on :{self.listen_port} -> {self.target[0]}:{self.target[1]}")
         print(f"Conditions: latency={self.latency*1000:.0f}ms  loss={self.loss*100:.0f}%")
 
         try:
-            while self.running:
-                data, client_addr = listen_sock.recvfrom(65535)
-
-                if self._should_drop():
-                    continue
-
-                with self.lock:
-                    if client_addr not in self.client_map:
-                        relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        self.client_map[client_addr] = relay_sock
-                        threading.Thread(
-                            target=self._relay_responses,
-                            args=(relay_sock, listen_sock, client_addr),
-                            daemon=True,
-                        ).start()
-                    relay_sock = self.client_map[client_addr]
-
-                self._delayed_send(relay_sock, data, self.target)
-        except KeyboardInterrupt:
-            print("\nStopping UDP proxy...")
+            await asyncio.Future()
         finally:
-            self.running = False
-            listen_sock.close()
+            transport.close()
+            for upstream in list(self.upstreams.values()):
+                upstream.close()
 
 
 if __name__ == "__main__":
@@ -116,6 +162,12 @@ if __name__ == "__main__":
     parser.add_argument("--listen_port", type=int, default=9433)
     parser.add_argument("--latency", type=float, default=0, help="Latency in ms")
     parser.add_argument("--loss", type=float, default=0, help="Packet loss %%")
+    parser.add_argument(
+        "--warmup_packets",
+        type=int,
+        default=8,
+        help="Do not drop the first N client packets to avoid random QUIC handshake failure",
+    )
     args = parser.parse_args()
 
     proxy = UDPProxy(
@@ -124,5 +176,10 @@ if __name__ == "__main__":
         listen_port=args.listen_port,
         latency=args.latency,
         loss=args.loss,
+        warmup_packets=args.warmup_packets,
     )
-    proxy.start()
+
+    try:
+        asyncio.run(proxy.run())
+    except KeyboardInterrupt:
+        print("\nStopping UDP proxy...")
