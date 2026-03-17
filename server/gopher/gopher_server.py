@@ -26,10 +26,11 @@ DEFAULT_PORT = 70
 CONTENT_DIR = "../../data/content"
 
 class GopherHandler:
-    def __init__(self, request, client_address, root_dir):
+    def __init__(self, request, client_address, root_dir, server_port):
         self.request = request
         self.client_address = client_address
         self.root_dir = os.path.abspath(root_dir)
+        self.server_port = server_port
 
     def handle(self):
         try:
@@ -103,7 +104,7 @@ def run_server(host=DEFAULT_HOST, port=DEFAULT_PORT, content_dir=CONTENT_DIR):
     try:
         while True:
             client_sock, client_addr = server_socket.accept()
-            handler = GopherHandler(client_sock, client_addr, content_dir)
+            handler = GopherHandler(client_sock, client_addr, content_dir, port)
             threading.Thread(target=handler.handle).start()
     except KeyboardInterrupt:
         print("\nServer stopping...")

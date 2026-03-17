@@ -31,12 +31,76 @@ python generate_content.py
 ```
 
 ### 2. Run Test Suite
-This will run all scenarios defined in `run_test_suite.py` and generate `results.csv` and `ttfb_comparison.png`.
+This runs the full benchmark preset across all configured scenarios and generates CSV files, PNG charts, and an interactive HTML dashboard.
 ```bash
 python run_test_suite.py
 ```
 
-### 3. Manual Testing
+### 3. Run a Short Demo Preset
+Use a preset when you want a fast live benchmark instead of the full study.
+
+Preset summary:
+
+| Preset | Scenarios | Protocols | Tests | Runs Per Test | Multi File Count | Typical Use |
+|---|---|---|---|---:|---:|---|
+| `full` | Baseline, High_Latency, Packet_Loss, Mixed | gopher-original, gopher-modern, http/1.1, http/2, http/3 | handshake, throughput, multi | 3 | 10 | Final report dataset |
+| `demo_baseline` | Baseline | gopher-original, http/1.1, http/3 | handshake, multi | 1 | 5 | Fast low-risk live demo |
+| `demo_packet_loss` | Packet_Loss | gopher-original, http/1.1, http/3 | handshake, throughput | 1 | 5 | Live packet-loss comparison |
+| `demo_compare_all` | Baseline | gopher-original, gopher-modern, http/1.1, http/2, http/3 | handshake | 1 | 5 | Quick all-protocol handshake snapshot |
+
+Test labels used by presets:
+
+- `handshake`: single `1kb.txt` request (shows connection/setup and first-byte behavior)
+- `throughput`: single `1mb.txt` request (shows large-transfer efficiency)
+- `multi`: waterfall request of `small_*.txt` files (shows multi-object behavior)
+
+Packet-loss demo for a short live run:
+```bash
+python run_test_suite.py --preset demo_packet_loss
+```
+
+What `demo_packet_loss` actually tests:
+
+- Scenario: `Packet_Loss` (0 ms latency, 5% packet loss)
+- Protocols: `gopher-original`, `http/1.1`, `http/3`
+- Tests: `handshake` (`1kb.txt`) and `throughput` (`1mb.txt`)
+- Repetitions: `1` run per test/protocol combination
+- Output files include suffix `_demo_packet_loss`
+
+Baseline demo with handshake + multi-object only:
+```bash
+python run_test_suite.py --preset demo_baseline
+```
+
+Compare all protocols on handshake only:
+```bash
+python run_test_suite.py --preset demo_compare_all
+```
+
+### 4. Override Specific Parts of a Run
+You can narrow the run without editing the source file.
+
+Example: one scenario, three protocols, two tests, one run:
+```bash
+python run_test_suite.py --preset full --scenario Packet_Loss --protocol gopher-original --protocol http/1.1 --protocol http/3 --test handshake --test throughput --runs 1
+```
+
+Example: create charts and dashboard from existing CSV files only:
+```bash
+python run_test_suite.py --preset demo_packet_loss --dashboard-only
+```
+
+### 5. Outputs
+The suite now generates:
+
+- Scenario CSV files in `results/`
+- Summary statistics CSV in `results/`
+- Static PNG charts in `results/`
+- Interactive Plotly dashboard HTML in `results/`
+
+The dashboard file is named `demo_dashboard*.html` and can be opened directly in a browser for a live presentation.
+
+### 6. Manual Testing
 You can run components individually:
 
 **Start Gopher Server:**

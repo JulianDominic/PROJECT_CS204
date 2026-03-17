@@ -11,3 +11,4 @@ wheels/
 
 # Payload data
 data/content/
+venv
