@@ -122,3 +122,10 @@ python server/proxy.py --target_host localhost --target_port 7070 --listen_port 
 ```bash
 python client/benchmark.py --host localhost --port 7000 --protocol gopher --file 1kb.txt
 ```
+
+
+### 7. Remote Server Testing
+A remote server has been set up, and can be tested by running the client testing suite on your own local machine.
+```bash
+python remote-clients.py
+```
