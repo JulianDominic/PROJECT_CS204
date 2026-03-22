@@ -31,11 +31,11 @@ from client.benchmark import BenchmarkRunner
 
 
 PORTS = {
-    "gopher-original": {"server": 7070, "proxy": 9070},
-    "gopher-modern": {"server": 7071, "proxy": 9071},
-    "http/1.1": {"server": 8080, "proxy": 9080},
-    "http/2": {"server": 8443, "proxy": 9443},
-    "http/3": {"server": 4433, "proxy": 9433},
+    "gopher-original": {"server": 7070, "proxy": 10070},
+    "gopher-modern": {"server": 7071, "proxy": 10071},
+    "http/1.1": {"server": 8080, "proxy": 10080},
+    "http/2": {"server": 8443, "proxy": 10443},
+    "http/3": {"server": 4433, "proxy": 10433},
 }
 
 ALL_PROTOCOLS = ["gopher-original", "gopher-modern", "http/1.1", "http/2", "http/3"]
