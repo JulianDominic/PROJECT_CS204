@@ -358,6 +358,9 @@ def measure_http2_multi_multiplexed(host, port, filenames):
 # ═══════════════════════════════════════════════════════════════════════
 
 if HAS_HTTP3:
+    HTTP3_MULTI_CONCURRENCY = 4
+    HTTP3_STREAM_TIMEOUT = 120.0
+    HTTP3_IDLE_TIMEOUT = 180.0
 
     class _H3Client(QuicConnectionProtocol):
         """HTTP/3 client protocol for benchmarking."""
@@ -422,7 +425,14 @@ if HAS_HTTP3:
             )
             self.transmit()
 
-            events = await asyncio.wait_for(waiter, timeout=30.0)
+            try:
+                events = await asyncio.wait_for(waiter, timeout=HTTP3_STREAM_TIMEOUT)
+            except asyncio.TimeoutError:
+                self._request_waiters.pop(stream_id, None)
+                self._request_events.pop(stream_id, None)
+                self._first_byte_times.pop(stream_id, None)
+                self._request_start_times.pop(stream_id, None)
+                raise
 
             data = b"".join(
                 ev.data for ev in events if isinstance(ev, DataReceived)
@@ -434,6 +444,7 @@ if HAS_HTTP3:
         """HTTP/3 single file over QUIC."""
         config = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=True)
         config.verify_mode = ssl.CERT_NONE
+        config.idle_timeout = HTTP3_IDLE_TIMEOUT
 
         start = time.time()
         connect_host = _http3_connect_host(host)
@@ -446,9 +457,10 @@ if HAS_HTTP3:
         return {"ttfb": ttfb, "total_time": total_time, "bytes": len(data)}
 
     async def _measure_http3_multi(host, port, filenames):
-        """HTTP/3 multi-file: reuse one QUIC connection across sequential requests."""
+        """HTTP/3 multi-file: reuse one QUIC connection across bounded concurrent streams."""
         config = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=True)
         config.verify_mode = ssl.CERT_NONE
+        config.idle_timeout = HTTP3_IDLE_TIMEOUT
 
         start = time.time()
         connect_host = _http3_connect_host(host)
@@ -456,11 +468,17 @@ if HAS_HTTP3:
             connect_host, port, configuration=config, create_protocol=_H3Client
         ) as client:
             authority = f"{connect_host}:{port}"
-            tasks = [client.get(authority, f"/{f}") for f in filenames]
+            limiter = asyncio.Semaphore(HTTP3_MULTI_CONCURRENCY)
+
+            async def fetch(filename):
+                async with limiter:
+                    return await client.get(authority, f"/{filename}")
+
+            tasks = [fetch(f) for f in filenames]
             results = await asyncio.gather(*tasks)
 
         total_bytes = sum(len(data) for data, _ in results)
-        first_ttfb = results[0][1] if results else 0
+        first_ttfb = min((ttfb for _, ttfb in results), default=0)
         total_time = (time.time() - start) * 1000
 
         return {
