@@ -39,7 +39,7 @@ PORTS = {
 }
 
 ALL_PROTOCOLS = ["gopher-original", "gopher-modern", "http/1.1", "http/2", 
-    # "http/3"        COMMENT THIS OUT CUZ HTTP3 CANT WORK
+    "http/3"
 ]
 DEFAULT_SCENARIOS = [
     {"name": "Baseline", "latency": 0, "loss": 0},
