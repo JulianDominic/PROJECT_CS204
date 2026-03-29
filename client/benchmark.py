@@ -31,6 +31,7 @@ import csv
 import ssl
 import asyncio
 import argparse
+import threading
 import warnings
 from datetime import datetime
 
@@ -359,8 +360,8 @@ def measure_http2_multi_multiplexed(host, port, filenames):
 
 if HAS_HTTP3:
     HTTP3_MULTI_CONCURRENCY = 4
-    HTTP3_STREAM_TIMEOUT = 120.0
-    HTTP3_IDLE_TIMEOUT = 180.0
+    HTTP3_STREAM_TIMEOUT = 300.0
+    HTTP3_IDLE_TIMEOUT = 360.0
 
     class _H3Client(QuicConnectionProtocol):
         """HTTP/3 client protocol for benchmarking."""
@@ -544,9 +545,20 @@ FIELDNAMES = [
 
 
 class BenchmarkRunner:
-    def __init__(self, output_file="results.csv"):
+    _csv_lock = threading.Lock()
+
+    def __init__(self, output_file="results.csv", warmup=True, on_result=None):
         self.output_file = output_file
         self.results = []
+        self.warmup = warmup
+        self.on_result = on_result  # callback for live dashboard
+
+    def _do_warmup(self, measure, *args):
+        """Run one warm-up iteration (discarded) to prime connections/caches."""
+        try:
+            measure(*args)
+        except Exception:
+            pass
 
     def run_single(self, protocol, host, port, filename, runs=10, scenario="Baseline"):
         """Benchmark: fetch a single file `runs` times."""
@@ -557,6 +569,10 @@ class BenchmarkRunner:
 
         measure = funcs["single"]
         print(f"  {protocol} | {filename} | single | {runs} runs ", end="", flush=True)
+
+        if self.warmup:
+            self._do_warmup(measure, host, port, filename)
+            print("w", end="", flush=True)
 
         for i in range(runs):
             try:
@@ -577,6 +593,8 @@ class BenchmarkRunner:
                     }
                 )
                 self.results.append(result)
+                if self.on_result:
+                    self.on_result(result)
                 print(".", end="", flush=True)
             except Exception as e:
                 print(f"x({e})", end="", flush=True)
@@ -597,6 +615,10 @@ class BenchmarkRunner:
             flush=True,
         )
 
+        if self.warmup:
+            self._do_warmup(measure, host, port, filenames)
+            print("w", end="", flush=True)
+
         for i in range(runs):
             try:
                 result = measure(host, port, filenames)
@@ -615,6 +637,8 @@ class BenchmarkRunner:
                     }
                 )
                 self.results.append(result)
+                if self.on_result:
+                    self.on_result(result)
                 print(".", end="", flush=True)
             except Exception as e:
                 print(f"x({e})", end="", flush=True)
@@ -622,16 +646,17 @@ class BenchmarkRunner:
         print()
 
     def save(self):
-        """Append results to CSV file."""
+        """Append results to CSV file (thread-safe)."""
         if not self.results:
             return
 
-        file_exists = os.path.isfile(self.output_file)
-        with open(self.output_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
-            if not file_exists:
-                writer.writeheader()
-            writer.writerows(self.results)
+        with BenchmarkRunner._csv_lock:
+            file_exists = os.path.isfile(self.output_file)
+            with open(self.output_file, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerows(self.results)
 
         count = len(self.results)
         print(f"  -> Saved {count} results to {self.output_file}")

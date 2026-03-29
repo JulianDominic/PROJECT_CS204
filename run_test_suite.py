@@ -10,9 +10,11 @@ Modes:
 """
 
 import argparse
+import concurrent.futures
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, replace
 
@@ -40,20 +42,27 @@ PORTS = {
 
 ALL_PROTOCOLS = ["gopher-original", "gopher-modern", "http/1.1", "http/2", "http/3"]
 DEFAULT_SCENARIOS = [
-    {"name": "Baseline", "latency": 0, "loss": 0},
-    {"name": "High_Latency", "latency": 100, "loss": 0},
-    {"name": "Packet_Loss", "latency": 0, "loss": 5},
-    {"name": "Mixed", "latency": 50, "loss": 2},
+    {"name": "Baseline", "latency": 0, "loss": 0, "bandwidth": 0},
+    {"name": "High_Latency", "latency": 100, "loss": 0, "bandwidth": 0},
+    {"name": "Packet_Loss", "latency": 0, "loss": 5, "bandwidth": 0},
+    {"name": "Mixed", "latency": 50, "loss": 2, "bandwidth": 0},
+    {"name": "Bandwidth_Limited", "latency": 20, "loss": 0, "bandwidth": 125000},
+    {"name": "Realistic_WAN", "latency": 30, "loss": 1, "bandwidth": 500000},
 ]
 TEST_DEFINITIONS = {
     "handshake": {"kind": "single", "files": "1kb.txt", "label": "Handshake Test"},
     "throughput": {"kind": "single", "files": "1mb.txt", "label": "Throughput Test"},
+    "throughput_10kb": {"kind": "single", "files": "10kb.txt", "label": "Throughput 10KB"},
+    "throughput_100kb": {"kind": "single", "files": "100kb.txt", "label": "Throughput 100KB"},
+    "throughput_5mb": {"kind": "single", "files": "5mb.txt", "label": "Throughput 5MB"},
     "multi": {"kind": "multi", "files": None, "label": "Multi-Object Test"},
+    "multi_5": {"kind": "multi", "files": None, "label": "Multi-Object (5 files)", "multi_count": 5},
+    "multi_20": {"kind": "multi", "files": None, "label": "Multi-Object (20 files)", "multi_count": 20},
 }
-DEFAULT_TEST_ORDER = ["handshake", "throughput", "multi"]
+DEFAULT_TEST_ORDER = ["handshake", "throughput", "throughput_10kb", "throughput_100kb", "throughput_5mb", "multi", "multi_5", "multi_20"]
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_MULTI_FILE_COUNT = 10
-DEFAULT_RUNS_PER_TEST = 3
+DEFAULT_RUNS_PER_TEST = 10
 RESULTS_DIR = "results"
 CERTS_DIR = "certs"
 DASHBOARD_FILENAME = "demo_dashboard.html"
@@ -88,6 +97,16 @@ PRESET_CONFIGS = {
         tests=tuple(DEFAULT_TEST_ORDER),
         runs_per_test=DEFAULT_RUNS_PER_TEST,
         multi_file_count=DEFAULT_MULTI_FILE_COUNT,
+    ),
+    "demo_live": SuiteConfig(
+        name="demo_live",
+        scenarios=("Baseline", "Packet_Loss", "Realistic_WAN"),
+        protocols=tuple(ALL_PROTOCOLS),
+        tests=("handshake", "throughput", "multi"),
+        runs_per_test=1,
+        multi_file_count=10,
+        output_suffix="demo_live",
+        incremental_save=True,
     ),
     "demo_baseline": SuiteConfig(
         name="demo_baseline",
@@ -247,10 +266,11 @@ def start_proxies(scenario, protocols):
     proxies = {}
     lat = str(scenario["latency"])
     loss = str(scenario["loss"])
+    bw = str(scenario.get("bandwidth", 0))
     for proto in [proto for proto in protocols if proto != "http/3"]:
-        proxies[proto] = bg([sys.executable, "server/proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS[proto]["server"]), "--listen_port", str(PORTS[proto]["proxy"]), "--latency", lat, "--loss", loss])
+        proxies[proto] = bg([sys.executable, "server/proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS[proto]["server"]), "--listen_port", str(PORTS[proto]["proxy"]), "--latency", lat, "--loss", loss, "--bandwidth", bw])
     if "http/3" in protocols:
-        proxies["http/3"] = bg([sys.executable, "server/udp_proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS["http/3"]["server"]), "--listen_port", str(PORTS["http/3"]["proxy"]), "--latency", lat, "--loss", loss])
+        proxies["http/3"] = bg([sys.executable, "server/udp_proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS["http/3"]["server"]), "--listen_port", str(PORTS["http/3"]["proxy"]), "--latency", lat, "--loss", loss, "--bandwidth", bw])
     return proxies
 
 
@@ -264,7 +284,11 @@ def run_bench(runner, protocol, host, port, test_type, files, runs, scenario):
 
 def execute_test(runner, protocol, port, test_name, config, scenario_name):
     test_def = TEST_DEFINITIONS[test_name]
-    files = build_multi_files(config.multi_file_count) if test_name == "multi" else test_def["files"]
+    if test_def["kind"] == "multi":
+        count = test_def.get("multi_count", config.multi_file_count)
+        files = build_multi_files(count)
+    else:
+        files = test_def["files"]
     print(f"  [{test_def['label']}]")
     run_bench(runner, protocol, LOOPBACK_HOST, port, test_def["kind"], files, config.runs_per_test, scenario_name)
     if config.incremental_save:
@@ -338,6 +362,55 @@ def analyze_results(config):
         ax.legend(title="Protocol")
         fig.savefig(os.path.join(RESULTS_DIR, f"throughput_1mb{suffix}.png"), dpi=150, bbox_inches="tight")
         plt.close(fig)
+
+    # Throughput vs File Size chart
+    file_size_order = ["1kb.txt", "10kb.txt", "100kb.txt", "1mb.txt", "5mb.txt"]
+    file_size_labels = {"1kb.txt": "1 KB", "10kb.txt": "10 KB", "100kb.txt": "100 KB", "1mb.txt": "1 MB", "5mb.txt": "5 MB"}
+    scaling_data = single[single["file"].isin(file_size_order)]
+    if not scaling_data.empty:
+        for scenario_name in config.scenarios:
+            data = scaling_data[scaling_data["scenario"] == scenario_name]
+            if data.empty:
+                continue
+            fig, ax = plt.subplots(figsize=(12, 6))
+            for protocol in protocol_order:
+                proto_data = data[data["protocol"] == protocol]
+                if proto_data.empty:
+                    continue
+                medians = proto_data.groupby("file")["throughput"].median().reindex(file_size_order).dropna()
+                ax.plot([file_size_labels.get(f, f) for f in medians.index], medians.values,
+                        marker="o", label=protocol, color=PALETTE.get(protocol))
+            ax.set_title(f"Throughput vs File Size — {scenario_name}", fontsize=14)
+            ax.set_ylabel("Throughput (kbps)")
+            ax.set_xlabel("File Size")
+            ax.legend(title="Protocol")
+            ax.set_yscale("log")
+            fig.savefig(os.path.join(RESULTS_DIR, f"throughput_scaling_{scenario_name}{suffix}.png"), dpi=150, bbox_inches="tight")
+            plt.close(fig)
+
+    # Multi-Object Scaling chart
+    multi_scaling = multi.copy()
+    # Extract file count from the "file" column (e.g. "5_files" -> 5)
+    multi_scaling["file_count"] = multi_scaling["file"].str.extract(r"(\d+)").astype(int)
+    if not multi_scaling.empty:
+        for scenario_name in config.scenarios:
+            data = multi_scaling[multi_scaling["scenario"] == scenario_name]
+            if data.empty:
+                continue
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for protocol in protocol_order:
+                proto_data = data[data["protocol"] == protocol]
+                if proto_data.empty:
+                    continue
+                medians = proto_data.groupby("file_count")["total_time"].median().sort_index()
+                ax.plot(medians.index, medians.values, marker="s", label=protocol, color=PALETTE.get(protocol))
+            ax.set_title(f"Multi-Object Scaling — {scenario_name}", fontsize=14)
+            ax.set_ylabel("Total Time (ms)")
+            ax.set_xlabel("Number of Files")
+            ax.legend(title="Protocol")
+            ax.set_xticks(sorted(data["file_count"].unique()))
+            fig.savefig(os.path.join(RESULTS_DIR, f"multi_scaling_{scenario_name}{suffix}.png"), dpi=150, bbox_inches="tight")
+            plt.close(fig)
 
     cols = 2
     rows = max(1, (len(config.scenarios) + cols - 1) // cols)
@@ -482,11 +555,19 @@ def generate_dashboard(config, combined=None):
     return dashboard_path
 
 
-def run_suite(config):
+def run_suite(config, live=False):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     content_dir = os.path.abspath("data/content")
     steps = planned_steps(config)
     total_steps = len(steps)
+
+    on_result = None
+    if live:
+        try:
+            from dashboard.live_server import emit_result
+            on_result = emit_result
+        except ImportError:
+            print("  Warning: live dashboard not available (flask-socketio not installed)")
 
     print("=" * 64)
     print("  CS204 Protocol Benchmark Suite")
@@ -514,21 +595,35 @@ def run_suite(config):
             name = scenario["name"]
             print(f"\n{'=' * 64}")
             print(f"  SCENARIO: {name}")
-            print(f"  Latency: {scenario['latency']} ms   Packet Loss: {scenario['loss']}%")
+            print(f"  Latency: {scenario['latency']} ms   Packet Loss: {scenario['loss']}%   Bandwidth: {scenario.get('bandwidth', 0)} B/s")
             print(f"{'=' * 64}")
             print("  Starting proxies...")
             proxies = start_proxies(scenario, config.protocols)
             ensure_started(proxies, f"Proxy startup for {name}")
             print("  Proxies started.")
-            runner = BenchmarkRunner(output_filename_for(config, name))
-            for protocol in config.protocols:
+
+            output_file = output_filename_for(config, name)
+            step_lock = threading.Lock()
+
+            def run_protocol(protocol):
+                nonlocal step_idx
                 port = PORTS[protocol]["proxy"]
+                runner = BenchmarkRunner(output_file, on_result=on_result)
                 print(f"\n  --- {protocol} (via proxy :{port}) ---")
                 for test_name in config.tests:
-                    step_idx += 1
-                    print(f"  Step {step_idx}/{total_steps}: {name} | {protocol} | {test_name}")
+                    with step_lock:
+                        step_idx += 1
+                        current_step = step_idx
+                    print(f"  Step {current_step}/{total_steps}: {name} | {protocol} | {test_name}")
                     execute_test(runner, protocol, port, test_name, config, name)
-            runner.save()
+                runner.save()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(config.protocols)) as executor:
+                futures = [executor.submit(run_protocol, proto) for proto in config.protocols]
+                concurrent.futures.wait(futures)
+                for f in futures:
+                    f.result()  # raise any exceptions
+
             print(f"  Scenario complete: {name}")
             stop(proxies)
             time.sleep(1)
@@ -558,6 +653,7 @@ def parse_args():
     parser.add_argument("--skip-analysis", action="store_true")
     parser.add_argument("--skip-dashboard", action="store_true")
     parser.add_argument("--dashboard-only", action="store_true")
+    parser.add_argument("--live", action="store_true", help="Enable live dashboard updates")
     return parser.parse_args()
 
 
@@ -591,4 +687,4 @@ if __name__ == "__main__":
         if dashboard:
             print(f"  Interactive dashboard saved to {dashboard}")
     else:
-        run_suite(suite_config)
+        run_suite(suite_config, live=options.live)

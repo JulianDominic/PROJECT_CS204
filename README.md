@@ -100,6 +100,40 @@ The suite now generates:
 
 The dashboard file is named `demo_dashboard*.html` and can be opened directly in a browser for a live presentation.
 
+## Docker (Recommended)
+
+Eliminates environment setup — everything runs in a single container.
+
+### Launch the interactive dashboard
+```bash
+docker compose up
+# Open http://localhost:8501 in your browser
+# Run tests directly from the dashboard UI
+```
+
+### Run tests directly (no dashboard)
+```bash
+docker compose run benchmark python run_test_suite.py --preset full
+docker compose run benchmark python run_test_suite.py --preset demo_live
+```
+
+Results are saved to the `results/` directory on your host via volume mount.
+
+## Interactive Dashboard
+
+The Streamlit dashboard at `http://localhost:8501` lets you:
+- Select presets or configure custom test parameters
+- Run benchmarks with a single click
+- Watch results update in real-time as tests complete
+- View TTFB, throughput, multi-object, and scaling charts
+- See winner cards for each metric
+
+### Without Docker
+```bash
+pip install -r requirements.txt
+streamlit run dashboard/app.py
+```
+
 ### 6. Manual Testing
 You can run components individually:
 

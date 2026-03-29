@@ -48,6 +48,7 @@ class UDPProxy:
         listen_port=9433,
         latency=0,
         loss=0,
+        bandwidth=0,
         warmup_packets=8,
     ):
         self.target = self._resolve_target(target_host, target_port)
@@ -55,6 +56,7 @@ class UDPProxy:
         self.listen_port = listen_port
         self.latency = latency / 1000.0
         self.loss = loss / 100.0
+        self.bandwidth = bandwidth  # bytes per second (0 = unlimited)
         self.warmup_packets = max(0, warmup_packets)
 
         self.loop = None
@@ -82,6 +84,8 @@ class UDPProxy:
 
     def _schedule_send(self, transport, data, addr):
         delay = self.latency if self.latency > 0 else 0
+        if self.bandwidth > 0:
+            delay += len(data) / self.bandwidth
         self.send_order += 1
         order = self.send_order
         self.loop.call_later(delay, self._send_now, transport, data, addr, order)
@@ -145,7 +149,7 @@ class UDPProxy:
         self.listen_transport = transport
 
         print(f"UDP Proxy on :{self.listen_port} -> {self.target[0]}:{self.target[1]}")
-        print(f"Conditions: latency={self.latency*1000:.0f}ms  loss={self.loss*100:.0f}%")
+        print(f"Conditions: latency={self.latency*1000:.0f}ms  loss={self.loss*100:.0f}%  bw={self.bandwidth}B/s")
 
         try:
             await asyncio.Future()
@@ -162,6 +166,7 @@ if __name__ == "__main__":
     parser.add_argument("--listen_port", type=int, default=9433)
     parser.add_argument("--latency", type=float, default=0, help="Latency in ms")
     parser.add_argument("--loss", type=float, default=0, help="Packet loss %%")
+    parser.add_argument("--bandwidth", type=int, default=0, help="Bandwidth in bytes/sec (0=unlimited)")
     parser.add_argument(
         "--warmup_packets",
         type=int,
@@ -176,6 +181,7 @@ if __name__ == "__main__":
         listen_port=args.listen_port,
         latency=args.latency,
         loss=args.loss,
+        bandwidth=args.bandwidth,
         warmup_packets=args.warmup_packets,
     )
 
