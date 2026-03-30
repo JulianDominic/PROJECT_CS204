@@ -19,3 +19,6 @@ seaborn>=0.13.2
 prettytable>=3.9.0
 pyarrow>=14.0.0
 plotly>=5.24.0
+
+# ── Live dashboard ───────────────────────────────
+streamlit>=1.40.0

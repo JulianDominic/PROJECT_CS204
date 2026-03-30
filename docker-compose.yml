@@ -1,0 +1,10 @@
+services:
+  benchmark:
+    build: .
+    volumes:
+      - ./results:/app/results
+    ports:
+      - "8501:8501"
+    # Default: opens interactive dashboard at http://localhost:8501
+    # Override to run tests directly:
+    #   docker compose run benchmark python run_test_suite.py --preset full
