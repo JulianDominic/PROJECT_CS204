@@ -38,18 +38,11 @@ ALL_SCENARIOS = [
     "High_Latency",
     "Packet_Loss",
     "Mixed",
-    "Bandwidth_Limited",
-    "Realistic_WAN",
 ]
 ALL_TESTS = [
     "handshake",
     "throughput",
-    "throughput_10kb",
-    "throughput_100kb",
-    "throughput_5mb",
     "multi",
-    "multi_5",
-    "multi_20",
 ]
 PRESETS = ["demo_live", "demo_baseline", "demo_packet_loss", "demo_compare_all", "full"]
 
@@ -64,22 +57,6 @@ PALETTE = {
 # Ordered list so Plotly uses it consistently
 PALETTE_ORDER = list(PALETTE.keys())
 PALETTE_COLORS = list(PALETTE.values())
-
-# Map file names to a sortable size value (bytes) for the scaling chart
-FILE_SIZE_MAP = {
-    "1kb.txt": 1_024,
-    "10kb.txt": 10_240,
-    "100kb.txt": 102_400,
-    "1mb.txt": 1_048_576,
-    "5mb.txt": 5_242_880,
-}
-FILE_SIZE_LABELS = {
-    "1kb.txt": "1 KB",
-    "10kb.txt": "10 KB",
-    "100kb.txt": "100 KB",
-    "1mb.txt": "1 MB",
-    "5mb.txt": "5 MB",
-}
 
 # ---------------------------------------------------------------------------
 # Page config & CSS
@@ -108,7 +85,7 @@ st.markdown(
         color: inherit !important;
     }
     [data-testid="stSidebar"] button {
-        color: #1f2933 !important;
+        color: white !important;
         border: 1px solid #ccc !important;
     }
     [data-testid="stSidebar"] button:disabled {
@@ -189,8 +166,6 @@ def _drain_log_queue():
             break
         if line:
             st.session_state.log_lines.append(line)
-            if len(st.session_state.log_lines) > 200:
-                st.session_state.log_lines = st.session_state.log_lines[-200:]
             # Parse progress from "Step X/Y:" lines
             if "Step " in line and "/" in line:
                 try:
@@ -349,11 +324,14 @@ if st.session_state.running or st.session_state.log_lines:
     if st.session_state.running:
         st.info("Benchmark is running. Results update automatically every 2 seconds.")
     with st.expander("Live Log", expanded=st.session_state.running):
-        log_text = "\n".join(st.session_state.log_lines[-100:])
+        import html as _html
+        log_id = "live-log-box"
+        escaped = _html.escape("\n".join(st.session_state.log_lines))
         st.markdown(
-            f'<div style="height:250px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; '
-            f'font-family:monospace; font-size:13px; padding:12px; border-radius:8px; '
-            f'white-space:pre-wrap; word-break:break-all;">{log_text}</div>',
+            f'<div id="{log_id}" style="height:280px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; '
+            f'font-family:monospace; font-size:12px; padding:12px; border-radius:8px; '
+            f'white-space:pre-wrap; word-break:break-all;">{escaped}</div>'
+            f'<script>var el=document.getElementById("{log_id}");if(el)el.scrollTop=el.scrollHeight;</script>',
             unsafe_allow_html=True,
         )
 
@@ -381,7 +359,7 @@ else:
     # ------------------------------------------------------------------
     # Tabs
     # ------------------------------------------------------------------
-    tab_overview, tab_scaling, tab_raw = st.tabs(["Overview", "Scaling", "Raw Data"])
+    tab_overview, tab_winners, tab_hypotheses, tab_raw = st.tabs(["Overview", "Winners", "Hypotheses", "Raw Data"])
 
     # ==================================================================
     # TAB 1: Overview
@@ -456,109 +434,237 @@ else:
         else:
             st.info("No multi-object results available yet.")
 
-        # --- Winner cards ---
-        st.subheader("Best Protocol per Category")
-        card_cols = st.columns(3)
+    # ==================================================================
+    # TAB 2: Winners
+    # ==================================================================
+    with tab_winners:
+        st.subheader("Best Protocol per Test × Scenario")
 
-        if not ttfb_df.empty:
-            best_ttfb = ttfb_med.loc[ttfb_med["ttfb"].idxmin()]
-            card_cols[0].metric(
-                label="Lowest TTFB",
-                value=best_ttfb["protocol"],
-                delta=f"{best_ttfb['ttfb']:.2f} ms",
-                delta_color="inverse",
-            )
-        else:
-            card_cols[0].metric(label="Lowest TTFB", value="N/A")
+        winner_tests = [
+            ("Handshake (TTFB)", ttfb_df, "ttfb", "min", "{:.2f} ms"),
+            ("Throughput 1 MB", tp_df, "throughput", "max", "{:,.0f} kbps"),
+            ("Multi-Object", multi_df, "total_time", "min", "{:.2f} ms"),
+        ]
 
-        if not tp_df.empty:
-            best_tp = tp_med.loc[tp_med["throughput"].idxmax()]
-            card_cols[1].metric(
-                label="Highest Throughput",
-                value=best_tp["protocol"],
-                delta=f"{best_tp['throughput']:,.0f} B/s",
-            )
-        else:
-            card_cols[1].metric(label="Highest Throughput", value="N/A")
+        cards_html = []
+        for test_label, test_df, metric, best_fn, fmt in winner_tests:
+            if test_df.empty:
+                continue
+            scenarios_present = [s for s in ALL_SCENARIOS if s in test_df["scenario"].values]
+            if not scenarios_present:
+                continue
+            med = test_df.groupby(["scenario", "protocol"])[metric].median()
 
-        if not multi_df.empty:
-            best_multi = multi_med.loc[multi_med["total_time"].idxmin()]
-            card_cols[2].metric(
-                label="Fastest Multi-Object",
-                value=best_multi["protocol"],
-                delta=f"{best_multi['total_time']:.2f} ms",
-                delta_color="inverse",
+            cells = ""
+            for scenario in scenarios_present:
+                label = scenario.replace("_", " ")
+                if scenario not in med.index.get_level_values("scenario"):
+                    cells += (
+                        f"<div style='flex:1;min-width:100px;padding:12px 14px;"
+                        f"border-left:1px solid #333'>"
+                        f"<div style='font-size:0.75em;color:#888;margin-bottom:6px'>{label}</div>"
+                        f"<div style='font-size:1em;font-weight:bold'>N/A</div></div>"
+                    )
+                else:
+                    scenario_data = med[scenario]
+                    winner_proto = scenario_data.idxmin() if best_fn == "min" else scenario_data.idxmax()
+                    winner_val = scenario_data[winner_proto]
+                    cells += (
+                        f"<div style='flex:1;min-width:100px;padding:12px 14px;"
+                        f"border-left:1px solid #333'>"
+                        f"<div style='font-size:0.75em;color:#888;margin-bottom:6px'>{label}</div>"
+                        f"<div style='font-size:1.05em;font-weight:bold;margin-bottom:8px'>{winner_proto}</div>"
+                        f"<span style='background:#1a7a3f;color:#fff;padding:2px 8px;"
+                        f"border-radius:12px;font-size:0.75em'>{fmt.format(winner_val)}</span>"
+                        f"</div>"
+                    )
+
+            cards_html.append(
+                f"<div style='border:1px solid #444;border-radius:8px;margin-bottom:16px;overflow:hidden'>"
+                f"<div style='padding:10px 14px;background:#1e2530;font-weight:bold;font-size:0.95em'>{test_label}</div>"
+                f"<div style='display:flex;flex-wrap:wrap'>{cells}</div>"
+                f"</div>"
             )
-        else:
-            card_cols[2].metric(label="Fastest Multi-Object", value="N/A")
+
+        st.markdown("".join(cards_html), unsafe_allow_html=True)
 
     # ==================================================================
-    # TAB 2: Scaling
+    # TAB 3: Hypotheses
     # ==================================================================
-    with tab_scaling:
-        # --- Throughput vs File Size ---
-        single_df = df[df["test_type"] == "single"].copy()
-        known_files = list(FILE_SIZE_MAP.keys())
-        scaling_df = single_df[single_df["file"].isin(known_files)].copy()
+    with tab_hypotheses:
+        st.subheader("Hypotheses vs Actual Results")
+        st.caption("Each hypothesis is checked against collected data. Verdicts update as more data is added.")
 
-        if not scaling_df.empty:
-            scaling_df["file_bytes"] = scaling_df["file"].map(FILE_SIZE_MAP)
-            scaling_df["file_label"] = scaling_df["file"].map(FILE_SIZE_LABELS)
-            scaling_med = (
-                scaling_df.groupby(["file_bytes", "file_label", "protocol"], as_index=False)["throughput"]
-                .median()
-                .sort_values("file_bytes")
+        # --- helper: safe median lookup ---
+        def _med(frame, scenario, protocol, metric):
+            if frame.empty:
+                return None
+            try:
+                g = frame[
+                    (frame["scenario"] == scenario) & (frame["protocol"] == protocol)
+                ][metric].median()
+                return float(g) if pd.notna(g) else None
+            except Exception:
+                return None
+
+        def _winner(frame, scenario, metric, fn):
+            """Return (protocol, value) for best protocol in a scenario."""
+            if frame.empty:
+                return None, None
+            try:
+                g = frame[frame["scenario"] == scenario].groupby("protocol")[metric].median()
+                if g.empty:
+                    return None, None
+                proto = g.idxmin() if fn == "min" else g.idxmax()
+                return proto, float(g[proto])
+            except Exception:
+                return None, None
+
+        VERDICT_STYLE = {
+            "Supported":          ("background:#1a7a3f;color:#fff", "Supported"),
+            "Strongly Supported": ("background:#155e2e;color:#fff", "Strongly Supported"),
+            "Partially Supported":("background:#7a5a1a;color:#fff", "Partially Supported"),
+            "Refuted":            ("background:#7a1a1a;color:#fff", "Refuted"),
+            "No Data":            ("background:#444;color:#aaa",    "No Data"),
+        }
+
+        def _badge(verdict):
+            style, label = VERDICT_STYLE.get(verdict, VERDICT_STYLE["No Data"])
+            return f"<span style='{style};padding:3px 12px;border-radius:12px;font-size:0.8em;font-weight:bold'>{label}</span>"
+
+        def _card(number, title, rationale, expected, actual_html, verdict):
+            return (
+                f"<div style='border:1px solid #444;border-radius:8px;margin-bottom:14px;overflow:hidden'>"
+                f"<div style='background:#1e2530;padding:10px 16px;display:flex;align-items:center;gap:12px'>"
+                f"<span style='font-size:0.85em;color:#888;font-weight:bold'>{number}</span>"
+                f"<span style='font-weight:bold;font-size:1em;flex:1'>{title}</span>"
+                f"{_badge(verdict)}"
+                f"</div>"
+                f"<div style='padding:14px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px'>"
+                f"<div><div style='font-size:0.75em;color:#888;margin-bottom:4px'>RATIONALE</div>"
+                f"<div style='font-size:0.85em'>{rationale}</div></div>"
+                f"<div><div style='font-size:0.75em;color:#888;margin-bottom:4px'>EXPECTED</div>"
+                f"<div style='font-size:0.85em'>{expected}</div></div>"
+                f"<div><div style='font-size:0.75em;color:#888;margin-bottom:4px'>ACTUAL (from data)</div>"
+                f"<div style='font-size:0.85em'>{actual_html}</div></div>"
+                f"</div>"
+                f"</div>"
             )
-            fig_scale = px.line(
-                scaling_med,
-                x="file_label",
-                y="throughput",
-                color="protocol",
-                markers=True,
-                title="Throughput vs File Size",
-                labels={"throughput": "Throughput (bytes/s)", "file_label": "File Size"},
-                color_discrete_map=PALETTE,
-                category_orders={
-                    "protocol": PALETTE_ORDER,
-                    "file_label": [FILE_SIZE_LABELS[k] for k in known_files],
-                },
-            )
-            fig_scale.update_layout(legend_title_text="Protocol")
-            st.plotly_chart(fig_scale, use_container_width=True)
+
+        cards = []
+
+        # H1 — Simpler protocols have lower TTFB on baseline
+        h1_winner, h1_val = _winner(ttfb_df, "Baseline", "ttfb", "min")
+        if h1_winner is None:
+            h1_actual = "No data"
+            h1_verdict = "No Data"
         else:
-            st.info("No single-file results with varying sizes available yet for the scaling chart.")
+            h1_actual = f"Winner: <b>{h1_winner}</b> ({h1_val:.2f} ms TTFB)"
+            h1_verdict = "Supported" if h1_winner in ("gopher-modern", "gopher-original") else "Partially Supported"
+        cards.append(_card(
+            "H1", "Simpler protocols have lower TTFB under ideal conditions",
+            "Gopher has no TLS, no headers, no content negotiation — fewer bytes before first data byte.",
+            "Gopher-modern wins on Baseline TTFB",
+            h1_actual, h1_verdict,
+        ))
 
-        # --- Multi-Object Scaling (file count vs total_time) ---
-        if not multi_df.empty and "num_files" in multi_df.columns:
-            mo_scale = multi_df.copy()
-            mo_scale["num_files"] = pd.to_numeric(mo_scale["num_files"], errors="coerce")
-            mo_scale = mo_scale.dropna(subset=["num_files"])
-            if not mo_scale.empty:
-                mo_med = (
-                    mo_scale.groupby(["num_files", "protocol"], as_index=False)["total_time"]
-                    .median()
-                    .sort_values("num_files")
-                )
-                fig_mo = px.line(
-                    mo_med,
-                    x="num_files",
-                    y="total_time",
-                    color="protocol",
-                    markers=True,
-                    title="Multi-Object Scaling (File Count vs Total Time)",
-                    labels={"total_time": "Total Time (ms)", "num_files": "Number of Files"},
-                    color_discrete_map=PALETTE,
-                    category_orders={"protocol": PALETTE_ORDER},
-                )
-                fig_mo.update_layout(legend_title_text="Protocol")
-                st.plotly_chart(fig_mo, use_container_width=True)
+        # H2 — HTTP/1.1 highest throughput on baseline 1MB
+        h2_winner, h2_val = _winner(tp_df, "Baseline", "throughput", "max")
+        if h2_winner is None:
+            h2_actual = "No data"
+            h2_verdict = "No Data"
+        else:
+            h2_actual = f"Winner: <b>{h2_winner}</b> ({h2_val:,.0f} kbps)"
+            h2_verdict = "Supported" if h2_winner == "http/1.1" else "Refuted"
+        cards.append(_card(
+            "H2", "HTTP/1.1 achieves the highest throughput for large single-file transfers",
+            "Decades of kernel-level TCP optimisation (sendfile, TSO/GRO) vs QUIC userspace overhead.",
+            "HTTP/1.1 wins on Baseline 1 MB throughput",
+            h2_actual, h2_verdict,
+        ))
+
+        # H3 — HTTP/2 most penalised by latency (highest TTFB in High_Latency)
+        h3_winner_low, _ = _winner(ttfb_df, "Baseline", "ttfb", "min")
+        h3_worst, h3_worst_val = _winner(ttfb_df, "High_Latency", "ttfb", "max")
+        if h3_worst is None:
+            h3_actual = "No data"
+            h3_verdict = "No Data"
+        else:
+            # compare multiplier: HTTP/2 baseline vs high latency
+            h3_base = _med(ttfb_df, "Baseline", "http/2", "ttfb")
+            h3_hl   = _med(ttfb_df, "High_Latency", "http/2", "ttfb")
+            if h3_base and h3_hl:
+                mult = h3_hl / h3_base
+                h3_actual = f"HTTP/2 High_Latency TTFB: <b>{h3_hl:.0f} ms</b> ({mult:.1f}× baseline). Worst: <b>{h3_worst}</b>"
             else:
-                st.info("No multi-object scaling data available yet.")
+                h3_actual = f"Worst under high latency: <b>{h3_worst}</b> ({h3_worst_val:.0f} ms)"
+            h3_verdict = "Strongly Supported" if h3_worst == "http/2" else "Refuted"
+        cards.append(_card(
+            "H3", "HTTP/2 is most penalised by high latency due to extra TLS round trips",
+            "HTTP/2 needs TCP handshake + TLS/ALPN = 2 RTTs before any data, vs 1 RTT for others.",
+            "HTTP/2 has highest TTFB under High_Latency; ~4× more than Baseline",
+            h3_actual, h3_verdict,
+        ))
+
+        # H4 — HTTP/3 most resilient to packet loss (multi-file)
+        h4_winner, h4_val = _winner(multi_df, "Packet_Loss", "total_time", "min")
+        if h4_winner is None:
+            h4_actual = "No data"
+            h4_verdict = "No Data"
         else:
-            st.info("No multi-object results available yet for the scaling chart.")
+            h4_actual = f"Winner: <b>{h4_winner}</b> ({h4_val:.0f} ms total for multi-file)"
+            h4_verdict = "Strongly Supported" if h4_winner == "http/3" else "Refuted"
+        cards.append(_card(
+            "H4", "HTTP/3 (QUIC) is the most resilient protocol under packet loss",
+            "QUIC eliminates TCP head-of-line blocking — a lost packet on one stream doesn't stall others.",
+            "HTTP/3 wins multi-object total time under Packet_Loss",
+            h4_actual, h4_verdict,
+        ))
+
+        # H5 — Gopher-original worst at multi-file baseline
+        h5_worst, h5_val = _winner(multi_df, "Baseline", "total_time", "max")
+        h5_go = _med(multi_df, "Baseline", "gopher-original", "total_time")
+        h5_gm = _med(multi_df, "Baseline", "gopher-modern",   "total_time")
+        if h5_worst is None:
+            h5_actual = "No data"
+            h5_verdict = "No Data"
+        else:
+            if h5_go and h5_gm:
+                h5_actual = (
+                    f"Gopher-original: <b>{h5_go:.1f} ms</b> vs Gopher-modern: <b>{h5_gm:.1f} ms</b>. "
+                    f"Slowest overall: <b>{h5_worst}</b>"
+                )
+            else:
+                h5_actual = f"Slowest: <b>{h5_worst}</b> ({h5_val:.1f} ms)"
+            h5_verdict = "Partially Supported" if (h5_go and h5_gm and h5_go > h5_gm) else ("Refuted" if h5_go and h5_gm else "No Data")
+        cards.append(_card(
+            "H5", "Gopher-original performs worst on multi-file tests due to connection-per-request overhead",
+            "RFC 1436 Gopher closes TCP after every response — 10 files = 10 TCP handshakes + Slow Start.",
+            "Gopher-original slowest in Baseline multi-file; faster than HTTP in some adverse conditions",
+            h5_actual, h5_verdict,
+        ))
+
+        # H6 — Gopher-modern faster than Gopher-original on multi baseline
+        h6_go = _med(multi_df, "Baseline", "gopher-original", "total_time")
+        h6_gm = _med(multi_df, "Baseline", "gopher-modern",   "total_time")
+        if h6_go is None or h6_gm is None:
+            h6_actual = "No data"
+            h6_verdict = "No Data"
+        else:
+            speedup = h6_go / h6_gm if h6_gm > 0 else 0
+            h6_actual = f"Gopher-modern: <b>{h6_gm:.1f} ms</b>, Gopher-original: <b>{h6_go:.1f} ms</b> → <b>{speedup:.1f}× speedup</b>"
+            h6_verdict = "Supported" if speedup >= 1.5 else ("Partially Supported" if speedup > 1.0 else "Refuted")
+        cards.append(_card(
+            "H6", "Persistent connections (Gopher-modern) significantly outperform Gopher-original on multi-file",
+            "One TCP connection shared across all requests eliminates repeated handshake and Slow Start.",
+            "Gopher-modern ≥2× faster than Gopher-original under Baseline multi-file",
+            h6_actual, h6_verdict,
+        ))
+
+        st.markdown("".join(cards), unsafe_allow_html=True)
 
     # ==================================================================
-    # TAB 3: Raw Data
+    # TAB 4: Raw Data
     # ==================================================================
     with tab_raw:
         st.dataframe(

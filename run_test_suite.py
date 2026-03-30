@@ -46,20 +46,13 @@ DEFAULT_SCENARIOS = [
     {"name": "High_Latency", "latency": 100, "loss": 0, "bandwidth": 0},
     {"name": "Packet_Loss", "latency": 0, "loss": 5, "bandwidth": 0},
     {"name": "Mixed", "latency": 50, "loss": 2, "bandwidth": 0},
-    {"name": "Bandwidth_Limited", "latency": 20, "loss": 0, "bandwidth": 125000},
-    {"name": "Realistic_WAN", "latency": 30, "loss": 1, "bandwidth": 500000},
 ]
 TEST_DEFINITIONS = {
     "handshake": {"kind": "single", "files": "1kb.txt", "label": "Handshake Test"},
     "throughput": {"kind": "single", "files": "1mb.txt", "label": "Throughput Test"},
-    "throughput_10kb": {"kind": "single", "files": "10kb.txt", "label": "Throughput 10KB"},
-    "throughput_100kb": {"kind": "single", "files": "100kb.txt", "label": "Throughput 100KB"},
-    "throughput_5mb": {"kind": "single", "files": "5mb.txt", "label": "Throughput 5MB"},
     "multi": {"kind": "multi", "files": None, "label": "Multi-Object Test"},
-    "multi_5": {"kind": "multi", "files": None, "label": "Multi-Object (5 files)", "multi_count": 5},
-    "multi_20": {"kind": "multi", "files": None, "label": "Multi-Object (20 files)", "multi_count": 20},
 }
-DEFAULT_TEST_ORDER = ["handshake", "throughput", "throughput_10kb", "throughput_100kb", "throughput_5mb", "multi", "multi_5", "multi_20"]
+DEFAULT_TEST_ORDER = ["handshake", "throughput", "multi"]
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_MULTI_FILE_COUNT = 10
 DEFAULT_RUNS_PER_TEST = 10
@@ -100,7 +93,7 @@ PRESET_CONFIGS = {
     ),
     "demo_live": SuiteConfig(
         name="demo_live",
-        scenarios=("Baseline", "Packet_Loss", "Realistic_WAN"),
+        scenarios=("Baseline", "Packet_Loss", "High_Latency"),
         protocols=tuple(ALL_PROTOCOLS),
         tests=("handshake", "throughput", "multi"),
         runs_per_test=1,
@@ -363,54 +356,6 @@ def analyze_results(config):
         fig.savefig(os.path.join(RESULTS_DIR, f"throughput_1mb{suffix}.png"), dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-    # Throughput vs File Size chart
-    file_size_order = ["1kb.txt", "10kb.txt", "100kb.txt", "1mb.txt", "5mb.txt"]
-    file_size_labels = {"1kb.txt": "1 KB", "10kb.txt": "10 KB", "100kb.txt": "100 KB", "1mb.txt": "1 MB", "5mb.txt": "5 MB"}
-    scaling_data = single[single["file"].isin(file_size_order)]
-    if not scaling_data.empty:
-        for scenario_name in config.scenarios:
-            data = scaling_data[scaling_data["scenario"] == scenario_name]
-            if data.empty:
-                continue
-            fig, ax = plt.subplots(figsize=(12, 6))
-            for protocol in protocol_order:
-                proto_data = data[data["protocol"] == protocol]
-                if proto_data.empty:
-                    continue
-                medians = proto_data.groupby("file")["throughput"].median().reindex(file_size_order).dropna()
-                ax.plot([file_size_labels.get(f, f) for f in medians.index], medians.values,
-                        marker="o", label=protocol, color=PALETTE.get(protocol))
-            ax.set_title(f"Throughput vs File Size — {scenario_name}", fontsize=14)
-            ax.set_ylabel("Throughput (kbps)")
-            ax.set_xlabel("File Size")
-            ax.legend(title="Protocol")
-            ax.set_yscale("log")
-            fig.savefig(os.path.join(RESULTS_DIR, f"throughput_scaling_{scenario_name}{suffix}.png"), dpi=150, bbox_inches="tight")
-            plt.close(fig)
-
-    # Multi-Object Scaling chart
-    multi_scaling = multi.copy()
-    # Extract file count from the "file" column (e.g. "5_files" -> 5)
-    multi_scaling["file_count"] = multi_scaling["file"].str.extract(r"(\d+)").astype(int)
-    if not multi_scaling.empty:
-        for scenario_name in config.scenarios:
-            data = multi_scaling[multi_scaling["scenario"] == scenario_name]
-            if data.empty:
-                continue
-            fig, ax = plt.subplots(figsize=(10, 6))
-            for protocol in protocol_order:
-                proto_data = data[data["protocol"] == protocol]
-                if proto_data.empty:
-                    continue
-                medians = proto_data.groupby("file_count")["total_time"].median().sort_index()
-                ax.plot(medians.index, medians.values, marker="s", label=protocol, color=PALETTE.get(protocol))
-            ax.set_title(f"Multi-Object Scaling — {scenario_name}", fontsize=14)
-            ax.set_ylabel("Total Time (ms)")
-            ax.set_xlabel("Number of Files")
-            ax.legend(title="Protocol")
-            ax.set_xticks(sorted(data["file_count"].unique()))
-            fig.savefig(os.path.join(RESULTS_DIR, f"multi_scaling_{scenario_name}{suffix}.png"), dpi=150, bbox_inches="tight")
-            plt.close(fig)
 
     cols = 2
     rows = max(1, (len(config.scenarios) + cols - 1) // cols)

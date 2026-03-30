@@ -11,3 +11,4 @@ wheels/
 venv
 
 .claude
+.DS_Store
