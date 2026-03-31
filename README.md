@@ -47,6 +47,8 @@ Preset summary:
 | `demo_baseline` | Baseline | gopher-original, http/1.1, http/3 | handshake, multi | 1 | 5 | Fast low-risk live demo |
 | `demo_packet_loss` | Packet_Loss | gopher-original, http/1.1, http/3 | handshake, throughput | 1 | 5 | Live packet-loss comparison |
 | `demo_compare_all` | Baseline | gopher-original, gopher-modern, http/1.1, http/2, http/3 | handshake | 1 | 5 | Quick all-protocol handshake snapshot |
+| `test_1` | Baseline | gopher-original, http/1.1, http/3 | handshake, multi | 1 | 5 | Same as demo_baseline (for testing) |
+| `test_2` | Packet_Loss | gopher-original, http/1.1, http/3 | throughput | 1 | 5 | Same as demo_packet_loss --test throughput |
 
 Test labels used by presets:
 

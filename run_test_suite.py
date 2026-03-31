@@ -119,6 +119,26 @@ PRESET_CONFIGS = {
         output_suffix="demo_compare_all",
         incremental_save=True,
     ),
+    "test_1": SuiteConfig(
+        name="test_1",
+        scenarios=("Baseline",),
+        protocols=("gopher-original", "http/1.1", "http/3"),
+        tests=("handshake", "multi"),
+        runs_per_test=1,
+        multi_file_count=5,
+        output_suffix="demo_baseline",
+        incremental_save=True,
+    ),
+    "test_2": SuiteConfig(
+        name="test_2",
+        scenarios=("Packet_Loss",),
+        protocols=("gopher-original", "http/1.1", "http/3"),
+        tests=("throughput",),
+        runs_per_test=1,
+        multi_file_count=5,
+        output_suffix="demo_packet_loss",
+        incremental_save=True,
+    ),
 }
 SCENARIO_MAP = {scenario["name"]: scenario for scenario in DEFAULT_SCENARIOS}
 
