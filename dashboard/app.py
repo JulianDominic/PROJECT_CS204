@@ -38,6 +38,8 @@ ALL_SCENARIOS = [
     "High_Latency",
     "Packet_Loss",
     "Mixed",
+    "Bandwidth_Limited",
+    "Realistic_WAN",
 ]
 ALL_TESTS = [
     "handshake",
@@ -450,7 +452,10 @@ else:
         for test_label, test_df, metric, best_fn, fmt in winner_tests:
             if test_df.empty:
                 continue
-            scenarios_present = [s for s in ALL_SCENARIOS if s in test_df["scenario"].values]
+            scenario_values = [str(s).strip() for s in test_df["scenario"].dropna().unique()]
+            preferred_order = [s for s in ALL_SCENARIOS if s in scenario_values]
+            extra_scenarios = sorted([s for s in scenario_values if s not in preferred_order])
+            scenarios_present = preferred_order + extra_scenarios
             if not scenarios_present:
                 continue
             med = test_df.groupby(["scenario", "protocol"])[metric].median()
