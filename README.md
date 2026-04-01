@@ -105,3 +105,10 @@ python client/benchmark.py --host localhost --port 9070 --protocol gopher-origin
 python generate_content.py
 python certs/generate_certs.py
 ```
+
+
+### 7. Remote Server Testing
+A remote server has been set up, and can be tested by running the client testing suite on your own local machine.
+```bash
+python remote-clients.py
+```

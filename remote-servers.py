@@ -10,11 +10,9 @@ Modes:
 """
 
 import argparse
-import concurrent.futures
 import os
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import dataclass, replace
 
@@ -33,19 +31,19 @@ from client.benchmark import BenchmarkRunner
 
 
 PORTS = {
-    "gopher-original": {"server": 7070, "proxy": 10070},
-    "gopher-modern": {"server": 7071, "proxy": 10071},
-    "http/1.1": {"server": 8080, "proxy": 10080},
-    "http/2": {"server": 8443, "proxy": 10443},
-    "http/3": {"server": 4433, "proxy": 10433},
+    "gopher-original": {"server": 11070, "proxy": 9070},
+    "gopher-modern": {"server": 11071, "proxy": 9071},
+    "http/1.1": {"server": 11072, "proxy": 9080},
+    "http/2": {"server": 11073, "proxy": 9443},
+    "http/3": {"server": 11074, "proxy": 9433},
 }
 
 ALL_PROTOCOLS = ["gopher-original", "gopher-modern", "http/1.1", "http/2", "http/3"]
 DEFAULT_SCENARIOS = [
-    {"name": "Baseline", "latency": 0, "loss": 0, "bandwidth": 0},
-    {"name": "High_Latency", "latency": 100, "loss": 0, "bandwidth": 0},
-    {"name": "Packet_Loss", "latency": 0, "loss": 5, "bandwidth": 0},
-    {"name": "Mixed", "latency": 50, "loss": 2, "bandwidth": 0},
+    {"name": "Baseline", "latency": 0, "loss": 0},
+    {"name": "High_Latency", "latency": 100, "loss": 0},
+    {"name": "Packet_Loss", "latency": 0, "loss": 5},
+    {"name": "Mixed", "latency": 50, "loss": 2},
 ]
 TEST_DEFINITIONS = {
     "handshake": {"kind": "single", "files": "1kb.txt", "label": "Handshake Test"},
@@ -55,7 +53,7 @@ TEST_DEFINITIONS = {
 DEFAULT_TEST_ORDER = ["handshake", "throughput", "multi"]
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_MULTI_FILE_COUNT = 10
-DEFAULT_RUNS_PER_TEST = 10
+DEFAULT_RUNS_PER_TEST = 3
 RESULTS_DIR = "results"
 CERTS_DIR = "certs"
 DASHBOARD_FILENAME = "demo_dashboard.html"
@@ -91,16 +89,6 @@ PRESET_CONFIGS = {
         runs_per_test=DEFAULT_RUNS_PER_TEST,
         multi_file_count=DEFAULT_MULTI_FILE_COUNT,
     ),
-    "demo_live": SuiteConfig(
-        name="demo_live",
-        scenarios=("Baseline", "Packet_Loss", "High_Latency"),
-        protocols=tuple(ALL_PROTOCOLS),
-        tests=("handshake", "throughput", "multi"),
-        runs_per_test=1,
-        multi_file_count=10,
-        output_suffix="demo_live",
-        incremental_save=True,
-    ),
     "demo_baseline": SuiteConfig(
         name="demo_baseline",
         scenarios=("Baseline",),
@@ -129,26 +117,6 @@ PRESET_CONFIGS = {
         runs_per_test=1,
         multi_file_count=5,
         output_suffix="demo_compare_all",
-        incremental_save=True,
-    ),
-    "test_1": SuiteConfig(
-        name="test_1",
-        scenarios=("Baseline",),
-        protocols=("gopher-original", "http/1.1", "http/3"),
-        tests=("handshake", "multi"),
-        runs_per_test=1,
-        multi_file_count=5,
-        output_suffix="demo_baseline",
-        incremental_save=True,
-    ),
-    "test_2": SuiteConfig(
-        name="test_2",
-        scenarios=("Packet_Loss",),
-        protocols=("gopher-original", "http/1.1", "http/3"),
-        tests=("throughput",),
-        runs_per_test=1,
-        multi_file_count=5,
-        output_suffix="demo_packet_loss",
         incremental_save=True,
     ),
 }
@@ -279,11 +247,10 @@ def start_proxies(scenario, protocols):
     proxies = {}
     lat = str(scenario["latency"])
     loss = str(scenario["loss"])
-    bw = str(scenario.get("bandwidth", 0))
     for proto in [proto for proto in protocols if proto != "http/3"]:
-        proxies[proto] = bg([sys.executable, "server/proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS[proto]["server"]), "--listen_port", str(PORTS[proto]["proxy"]), "--latency", lat, "--loss", loss, "--bandwidth", bw])
+        proxies[proto] = bg([sys.executable, "server/proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS[proto]["server"]), "--listen_port", str(PORTS[proto]["proxy"]), "--latency", lat, "--loss", loss])
     if "http/3" in protocols:
-        proxies["http/3"] = bg([sys.executable, "server/udp_proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS["http/3"]["server"]), "--listen_port", str(PORTS["http/3"]["proxy"]), "--latency", lat, "--loss", loss, "--bandwidth", bw])
+        proxies["http/3"] = bg([sys.executable, "server/udp_proxy.py", "--target_host", LOOPBACK_HOST, "--target_port", str(PORTS["http/3"]["server"]), "--listen_port", str(PORTS["http/3"]["proxy"]), "--latency", lat, "--loss", loss])
     return proxies
 
 
@@ -297,11 +264,7 @@ def run_bench(runner, protocol, host, port, test_type, files, runs, scenario):
 
 def execute_test(runner, protocol, port, test_name, config, scenario_name):
     test_def = TEST_DEFINITIONS[test_name]
-    if test_def["kind"] == "multi":
-        count = test_def.get("multi_count", config.multi_file_count)
-        files = build_multi_files(count)
-    else:
-        files = test_def["files"]
+    files = build_multi_files(config.multi_file_count) if test_name == "multi" else test_def["files"]
     print(f"  [{test_def['label']}]")
     run_bench(runner, protocol, LOOPBACK_HOST, port, test_def["kind"], files, config.runs_per_test, scenario_name)
     if config.incremental_save:
@@ -375,7 +338,6 @@ def analyze_results(config):
         ax.legend(title="Protocol")
         fig.savefig(os.path.join(RESULTS_DIR, f"throughput_1mb{suffix}.png"), dpi=150, bbox_inches="tight")
         plt.close(fig)
-
 
     cols = 2
     rows = max(1, (len(config.scenarios) + cols - 1) // cols)
@@ -520,89 +482,73 @@ def generate_dashboard(config, combined=None):
     return dashboard_path
 
 
-def run_suite(config, live=False):
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+def run_suite(config):
+    # os.makedirs(RESULTS_DIR, exist_ok=True)
     content_dir = os.path.abspath("data/content")
-    steps = planned_steps(config)
-    total_steps = len(steps)
+    # steps = planned_steps(config)
+    # total_steps = len(steps)
 
-    on_result = None
-    if live:
-        try:
-            from dashboard.live_server import emit_result
-            on_result = emit_result
-        except ImportError:
-            print("  Warning: live dashboard not available (flask-socketio not installed)")
-
-    print("=" * 64)
-    print("  CS204 Protocol Benchmark Suite")
-    print(f"  Preset: {config.name}")
-    print(f"  Protocols: {' | '.join(config.protocols)}")
-    print(f"  Scenarios: {' | '.join(config.scenarios)}")
-    print(f"  Runs per test: {config.runs_per_test}  |  Multi files: {config.multi_file_count}  |  Tests: {' | '.join(config.tests)}")
-    print(f"  Planned benchmark steps: {total_steps}")
-    print("=" * 64)
+    # print("=" * 64)
+    # print("  CS204 Protocol Benchmark Suite")
+    # print(f"  Preset: {config.name}")
+    # print(f"  Protocols: {' | '.join(config.protocols)}")
+    # print(f"  Scenarios: {' | '.join(config.scenarios)}")
+    # print(f"  Runs per test: {config.runs_per_test}  |  Multi files: {config.multi_file_count}  |  Tests: {' | '.join(config.tests)}")
+    # print(f"  Planned benchmark steps: {total_steps}")
+    # print("=" * 64)
 
     ensure_content()
     cert, key = ensure_certs()
-    for output_file in available_output_files(config):
-        if os.path.exists(output_file):
-            os.remove(output_file)
+    # for output_file in available_output_files(config):
+    #     if os.path.exists(output_file):
+    #         os.remove(output_file)
 
     print("\n  Starting servers...")
     servers = start_servers(content_dir, cert, key)
     ensure_started(servers, "Server startup", delay=3.0)
     print("  Servers started.")
 
-    step_idx = 0
-    try:
-        for scenario in selected_scenarios(config):
-            name = scenario["name"]
-            print(f"\n{'=' * 64}")
-            print(f"  SCENARIO: {name}")
-            print(f"  Latency: {scenario['latency']} ms   Packet Loss: {scenario['loss']}%   Bandwidth: {scenario.get('bandwidth', 0)} B/s")
-            print(f"{'=' * 64}")
-            print("  Starting proxies...")
-            proxies = start_proxies(scenario, config.protocols)
-            ensure_started(proxies, f"Proxy startup for {name}")
-            print("  Proxies started.")
+    while True:
+        if input("Enter q to quit: ") == "q":
+            print("\n  Stopping servers...")
+            stop(servers)
+            break
 
-            output_file = output_filename_for(config, name)
-            step_lock = threading.Lock()
+    # step_idx = 0
+    # try:
+    #     for scenario in selected_scenarios(config):
+    #         name = scenario["name"]
+    #         print(f"\n{'=' * 64}")
+    #         print(f"  SCENARIO: {name}")
+    #         print(f"  Latency: {scenario['latency']} ms   Packet Loss: {scenario['loss']}%")
+    #         print(f"{'=' * 64}")
+    #         print("  Starting proxies...")
+    #         proxies = start_proxies(scenario, config.protocols)
+    #         ensure_started(proxies, f"Proxy startup for {name}")
+    #         print("  Proxies started.")
+    #         runner = BenchmarkRunner(output_filename_for(config, name))
+    #         for protocol in config.protocols:
+    #             port = PORTS[protocol]["proxy"]
+    #             print(f"\n  --- {protocol} (via proxy :{port}) ---")
+    #             for test_name in config.tests:
+    #                 step_idx += 1
+    #                 print(f"  Step {step_idx}/{total_steps}: {name} | {protocol} | {test_name}")
+    #                 execute_test(runner, protocol, port, test_name, config, name)
+    #         runner.save()
+    #         print(f"  Scenario complete: {name}")
+    #         stop(proxies)
+    #         time.sleep(1)
+    # finally:
+    #     print("\n  Stopping servers...")
+    #     stop(servers)
 
-            def run_protocol(protocol):
-                nonlocal step_idx
-                port = PORTS[protocol]["proxy"]
-                runner = BenchmarkRunner(output_file, on_result=on_result)
-                print(f"\n  --- {protocol} (via proxy :{port}) ---")
-                for test_name in config.tests:
-                    with step_lock:
-                        step_idx += 1
-                        current_step = step_idx
-                    print(f"  Step {current_step}/{total_steps}: {name} | {protocol} | {test_name}")
-                    execute_test(runner, protocol, port, test_name, config, name)
-                runner.save()
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(config.protocols)) as executor:
-                futures = [executor.submit(run_protocol, proto) for proto in config.protocols]
-                concurrent.futures.wait(futures)
-                for f in futures:
-                    f.result()  # raise any exceptions
-
-            print(f"  Scenario complete: {name}")
-            stop(proxies)
-            time.sleep(1)
-    finally:
-        print("\n  Stopping servers...")
-        stop(servers)
-
-    print(f"\n{'=' * 64}")
-    print("  Benchmarks complete — generating analysis")
-    print(f"{'=' * 64}\n")
-    analysis = analyze_results(config) if config.include_static_analysis else None
-    dashboard = generate_dashboard(config, analysis["combined"] if analysis else None) if config.include_dashboard else None
-    if dashboard:
-        print(f"  Interactive dashboard saved to {dashboard}")
+    # print(f"\n{'=' * 64}")
+    # print("  Benchmarks complete — generating analysis")
+    # print(f"{'=' * 64}\n")
+    # analysis = analyze_results(config) if config.include_static_analysis else None
+    # dashboard = generate_dashboard(config, analysis["combined"] if analysis else None) if config.include_dashboard else None
+    # if dashboard:
+    #     print(f"  Interactive dashboard saved to {dashboard}")
 
 
 def parse_args():
@@ -618,7 +564,6 @@ def parse_args():
     parser.add_argument("--skip-analysis", action="store_true")
     parser.add_argument("--skip-dashboard", action="store_true")
     parser.add_argument("--dashboard-only", action="store_true")
-    parser.add_argument("--live", action="store_true", help="Enable live dashboard updates")
     return parser.parse_args()
 
 
@@ -652,4 +597,4 @@ if __name__ == "__main__":
         if dashboard:
             print(f"  Interactive dashboard saved to {dashboard}")
     else:
-        run_suite(suite_config, live=options.live)
+        run_suite(suite_config)

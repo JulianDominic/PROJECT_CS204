@@ -114,8 +114,8 @@ async def main(host, port, certfile, keyfile, content_dir):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="HTTP/3 Server (QUIC + aioquic)")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser = argparse.ArgumentParser(description="HTTP/3 Server (Hypercorn + Quart + QUIC)")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=4433)
     parser.add_argument("--dir", default=CONTENT_DIR)
     parser.add_argument("--certfile", default="../../certs/cert.pem")
