@@ -91,6 +91,16 @@ PRESET_CONFIGS = {
         runs_per_test=DEFAULT_RUNS_PER_TEST,
         multi_file_count=DEFAULT_MULTI_FILE_COUNT,
     ),
+    "demo_live": SuiteConfig(
+        name="demo_live",
+        scenarios=("Baseline", "Packet_Loss", "High_Latency"),
+        protocols=tuple(ALL_PROTOCOLS),
+        tests=("handshake", "throughput", "multi"),
+        runs_per_test=1,
+        multi_file_count=10,
+        output_suffix="demo_live",
+        incremental_save=True,
+    ),
     "demo_baseline": SuiteConfig(
         name="demo_baseline",
         scenarios=("Baseline",),

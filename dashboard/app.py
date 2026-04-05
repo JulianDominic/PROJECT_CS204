@@ -21,7 +21,9 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+REMOTE_RESULTS_DIR = os.path.join(PROJECT_ROOT, "results", "remote")
 RUN_SCRIPT = os.path.join(PROJECT_ROOT, "run_test_suite.py")
+REMOTE_RUN_SCRIPT = os.path.join(PROJECT_ROOT, "remote-clients.py")
 
 # ---------------------------------------------------------------------------
 # Constants (must match run_test_suite.py)
@@ -47,6 +49,8 @@ ALL_TESTS = [
     "multi",
 ]
 PRESETS = ["demo_live", "demo_baseline", "demo_packet_loss", "demo_compare_all", "full"]
+LOCAL_PRESETS = ["demo_live", "demo_baseline", "demo_packet_loss", "demo_compare_all", "full"]
+REMOTE_PRESETS = ["demo_live", "demo_baseline", "demo_packet_loss", "demo_compare_all", "full"]
 
 PALETTE = {
     "gopher-original": "#e74c3c",
@@ -185,9 +189,11 @@ def _drain_log_queue():
 # ---------------------------------------------------------------------------
 
 def load_results() -> pd.DataFrame:
-    """Read every results_*.csv in the results directory and return a combined DataFrame."""
-    pattern = os.path.join(RESULTS_DIR, "results_*.csv")
-    files = glob.glob(pattern)
+    """Read every results_*.csv from both local and remote results dirs."""
+    search_dirs = [RESULTS_DIR, REMOTE_RESULTS_DIR]
+    files = []
+    for d in search_dirs:
+        files.extend(glob.glob(os.path.join(d, "results_*.csv")))
     if not files:
         return pd.DataFrame()
     frames = []
@@ -207,6 +213,13 @@ def load_results() -> pd.DataFrame:
     return combined
 
 
+def _count_result_files() -> int:
+    files = []
+    for d in [RESULTS_DIR, REMOTE_RESULTS_DIR]:
+        files.extend(glob.glob(os.path.join(d, "results_*.csv")))
+    return len(files)
+
+
 def _color_sequence(protocols):
     """Return a colour list matching the protocol order."""
     return [PALETTE.get(p, "#888888") for p in protocols]
@@ -217,10 +230,18 @@ def _color_sequence(protocols):
 # ---------------------------------------------------------------------------
 st.sidebar.title("Test Controls")
 
+run_mode = st.sidebar.radio("Run mode", ["Local", "Remote Clients"], horizontal=True)
+active_script = REMOTE_RUN_SCRIPT if run_mode == "Remote Clients" else RUN_SCRIPT
+active_presets = REMOTE_PRESETS if run_mode == "Remote Clients" else LOCAL_PRESETS
+if run_mode == "Remote Clients":
+    st.sidebar.caption("Connects to the remote server — no local servers or proxies are started.")
+
+st.sidebar.markdown("---")
+
 mode = st.sidebar.radio("Configuration mode", ["Preset", "Manual"], horizontal=True)
 
 if mode == "Preset":
-    preset = st.sidebar.selectbox("Preset", PRESETS, index=0)
+    preset = st.sidebar.selectbox("Preset", active_presets, index=0)
     cmd_args = ["--preset", preset, "--incremental-save"]
 else:
     sel_scenarios = st.sidebar.multiselect("Scenarios", ALL_SCENARIOS, default=["Baseline"])
@@ -263,7 +284,7 @@ st.sidebar.markdown(f"**Status:** {status_colors.get(st.session_state.status, ''
 # ---------------------------------------------------------------------------
 
 if run_clicked:
-    full_cmd = [sys.executable, RUN_SCRIPT] + cmd_args
+    full_cmd = [sys.executable, active_script] + cmd_args
     st.session_state.log_lines = []
     st.session_state.step_current = 0
     st.session_state.step_total = 0
@@ -356,7 +377,7 @@ if df.empty:
     )
 else:
     # Show row count as a simple progress indicator
-    st.caption(f"Loaded **{len(df)}** result rows from {len(glob.glob(os.path.join(RESULTS_DIR, 'results_*.csv')))} file(s).")
+    st.caption(f"Loaded **{len(df)}** result rows from {_count_result_files()} file(s).")
 
     # ------------------------------------------------------------------
     # Tabs
