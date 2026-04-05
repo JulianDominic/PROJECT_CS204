@@ -152,51 +152,8 @@ def planned_steps(config):
     return steps
 
 
-def _quantile_interval(values):
-    q1 = values.quantile(0.25)
-    q3 = values.quantile(0.75)
-    median = values.quantile(0.5)
-    return median, q1, q3
-
-
 def _median_estimator(values):
     return values.quantile(0.5)
-
-
-def _apply_iqr_errorbars(ax, df, category_col, value_col, hue_col=None, order=None, hue_order=None):
-    from matplotlib.lines import Line2D
-
-    if order is None:
-        order = list(dict.fromkeys(df[category_col]))
-    if hue_col is not None and hue_order is None:
-        hue_order = list(dict.fromkeys(df[hue_col]))
-
-    bars = [patch for patch in ax.patches if patch.get_height() == patch.get_height()]
-    bar_idx = 0
-    for category in order:
-        if hue_col is None:
-            subset = df[df[category_col] == category][value_col]
-            if subset.empty:
-                continue
-            _, q1, q3 = _quantile_interval(subset)
-            patch = bars[bar_idx]
-            x = patch.get_x() + patch.get_width() / 2
-            ax.add_line(Line2D([x, x], [q1, q3], color="black", linewidth=1.2, zorder=5))
-            ax.add_line(Line2D([x - patch.get_width() * 0.18, x + patch.get_width() * 0.18], [q1, q1], color="black", linewidth=1.2, zorder=5))
-            ax.add_line(Line2D([x - patch.get_width() * 0.18, x + patch.get_width() * 0.18], [q3, q3], color="black", linewidth=1.2, zorder=5))
-            bar_idx += 1
-        else:
-            for hue in hue_order:
-                subset = df[(df[category_col] == category) & (df[hue_col] == hue)][value_col]
-                if subset.empty:
-                    continue
-                _, q1, q3 = _quantile_interval(subset)
-                patch = bars[bar_idx]
-                x = patch.get_x() + patch.get_width() / 2
-                ax.add_line(Line2D([x, x], [q1, q3], color="black", linewidth=1.0, zorder=5))
-                ax.add_line(Line2D([x - patch.get_width() * 0.18, x + patch.get_width() * 0.18], [q1, q1], color="black", linewidth=1.0, zorder=5))
-                ax.add_line(Line2D([x - patch.get_width() * 0.18, x + patch.get_width() * 0.18], [q3, q3], color="black", linewidth=1.0, zorder=5))
-                bar_idx += 1
 
 
 def bg(cmd):
@@ -310,7 +267,6 @@ def analyze_results(config):
         if not data.empty:
             fig, ax = plt.subplots(figsize=(12, 6))
             sns.barplot(data=data, x="file", y="ttfb", hue="protocol", palette=PALETTE, ax=ax, estimator=_median_estimator, errorbar=None, hue_order=protocol_order)
-            _apply_iqr_errorbars(ax, data, "file", "ttfb", hue_col="protocol", hue_order=protocol_order)
             ax.set_title(f"Time to First Byte (TTFB) — {scenario_name}", fontsize=14)
             ax.set_ylabel("TTFB (ms)")
             ax.set_xlabel("File")
@@ -322,7 +278,6 @@ def analyze_results(config):
         if not data.empty:
             fig, ax = plt.subplots(figsize=(10, 6))
             sns.barplot(data=data, x="protocol", y="total_time", palette=PALETTE, ax=ax, estimator=_median_estimator, errorbar=None, order=protocol_order)
-            _apply_iqr_errorbars(ax, data, "protocol", "total_time", order=protocol_order)
             ax.set_title(f"Multi-Object Total Time ({config.multi_file_count} files) — {scenario_name}", fontsize=14)
             ax.set_ylabel("Total Time (ms)")
             ax.set_xlabel("Protocol")
@@ -333,7 +288,6 @@ def analyze_results(config):
     if not large.empty:
         fig, ax = plt.subplots(figsize=(12, 6))
         sns.barplot(data=large, x="scenario", y="throughput", hue="protocol", palette=PALETTE, ax=ax, estimator=_median_estimator, errorbar=None, hue_order=protocol_order)
-        _apply_iqr_errorbars(ax, large, "scenario", "throughput", hue_col="protocol", hue_order=protocol_order)
         ax.set_title("Throughput — 1 MB File Transfer", fontsize=14)
         ax.set_ylabel("Throughput (kbps)")
         ax.set_xlabel("Network Scenario")
@@ -349,7 +303,6 @@ def analyze_results(config):
         data = single[single["scenario"] == scenario_name]
         if not data.empty:
             sns.barplot(data=data, x="file", y="total_time", hue="protocol", palette=PALETTE, ax=ax, estimator=_median_estimator, errorbar=None, hue_order=protocol_order)
-            _apply_iqr_errorbars(ax, data, "file", "total_time", hue_col="protocol", hue_order=protocol_order)
             ax.set_title(f"Total Transfer Time — {scenario_name}")
             ax.set_ylabel("Time (ms)")
             ax.set_xlabel("File")
