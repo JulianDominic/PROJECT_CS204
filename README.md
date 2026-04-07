@@ -110,5 +110,6 @@ python certs/generate_certs.py
 ### 7. Remote Server Testing
 A remote server has been set up, and can be tested by running the client testing suite on your own local machine.
 ```bash
-python remote-clients.py
+python remote-clients.py --scenario Baseline
 ```
+If you want the results to be in a new directory, just modify the `RESULTS_DIR` variable at the start of the code.

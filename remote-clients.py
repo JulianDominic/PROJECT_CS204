@@ -56,7 +56,7 @@ DEFAULT_TEST_ORDER = ["handshake", "throughput", "multi"]
 LOOPBACK_HOST = "42.61.215.169"
 DEFAULT_MULTI_FILE_COUNT = 10
 DEFAULT_RUNS_PER_TEST = 3
-RESULTS_DIR = "results/remote"
+RESULTS_DIR = "results/newRemote"
 CERTS_DIR = "certs"
 DASHBOARD_FILENAME = "demo_dashboard.html"
 PALETTE = {
@@ -546,6 +546,7 @@ def build_config(args):
 if __name__ == "__main__":
     options = parse_args()
     suite_config = build_config(options)
+    print(suite_config)
     if options.dashboard_only:
         print(f"  Dashboard-only mode for preset: {suite_config.name}")
         print("  Loading existing result files...")
