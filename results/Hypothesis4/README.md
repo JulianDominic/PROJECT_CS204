@@ -2,9 +2,9 @@
 
 ## Local Testing
 
-![Total Transfer Time - Local](./total_transfer_time_baseline_local.png)
-![Multi Object Total Time - Local](./multi_Baseline_total_time_local.png)
-![Throughput 1 MB - Local](./throughput_1mb_local.png)
+![Total Transfer Time - Local](./total_transfer_time_packet_loss_local.png)
+![Multi Object Total Time - Local](./multi_Packet_Loss_local.png)
+![Throughput 1 MB - Local](./throughput_packet_loss_local.png)
 
 Tests were conducted under the packet loss scenario. From the results, http/3 has the best timings for packet loss for both single object and multi-object requests. Throughput is also the best for http/3.
 
