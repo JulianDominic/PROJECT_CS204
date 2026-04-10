@@ -1,4 +1,4 @@
-# Hypothesis 3: Gopher-original performs worst on multi-file tests due to connection-per-request overhead
+# Hypothesis 5: Gopher-original performs worst on multi-file tests due to connection-per-request overhead
 
 ## Local Testing
 
