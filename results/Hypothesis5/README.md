@@ -2,11 +2,11 @@
 
 ## Local Testing
 
+![Multi Object Total Time (10 files) - Local](./multi_Mixed_Local.png)
+
 Gopher-original does perform worse on multi-file tests than every protocol except HTTP/1.1.
 
 **Reason:** Since HTTP/1.1 reuses the same TCP connection, when a packet is lost, all other packets have to wait. However, Gopher-original just creates a new TCP connection.
-
-![Multi Object Total Time (10 files) - Local](./multi_Mixed_Local.png)
 
 ## Remote Testing
 
